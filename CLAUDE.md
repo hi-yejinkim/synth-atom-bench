@@ -142,7 +142,7 @@ synthbench3d/
 ├── configs/                    # Hydra configs
 │   ├── data/
 │   ├── model/
-│   │   ├── gnn.yaml            # PaiNN (custom implementation)
+│   │   ├── gnn.yaml            # PaiNN from SchNetPack
 │   │   ├── transformer.yaml    # Transformer from SimpleFold
 │   │   └── pairformer.yaml     # Pairformer from Boltz
 │   └── experiment/
@@ -151,9 +151,9 @@ synthbench3d/
 │   ├── dataset.py              # PyTorch dataset
 │   └── validate.py             # Check g(r) of generated data
 ├── models/
-│   ├── gnn.py                  # PaiNN implementation (from scratch)
-│   ├── transformer.py          # Wrapper around SimpleFold transformer
-│   ├── pairformer.py           # Wrapper around Boltz Pairformer
+│   ├── gnn.py                  # PaiNN velocity network from SchNetPack
+│   ├── transformer.py          # Transformer velocity network from SimpleFold
+│   ├── pairformer.py           # Pairformer velocity network from Boltz
 │   └── common.py               # Shared: timestep embedding, output projection
 ├── flow_matching/
 │   ├── interpolation.py
@@ -184,9 +184,9 @@ synthbench3d/
 2. `data/dataset.py` — PyTorch dataset loading .npz files
 3. `metrics/clash_rate.py` — GPU-accelerated clash rate computation
 4. `flow_matching/` — shared interpolation, loss, ODE sampler
-5. `models/gnn.py` — implement PaiNN from scratch as velocity network
-6. `models/transformer.py` — wrap SimpleFold transformer blocks as velocity network
-7. `models/pairformer.py` — wrap Boltz PairformerStack as velocity network
+5. `models/gnn.py` — reimplement SchNetPack PaiNN as velocity network
+6. `models/transformer.py` — reimplement SimpleFold transformer blocks as velocity network
+7. `models/pairformer.py` — reimplement Boltz PairformerStack as velocity network
 8. `experiments/train.py` — training loop with Hydra configs
 9. `experiments/evaluate.py` — generate samples + compute clash rate
 10. `experiments/scaling.py` — compute-matched sweep
