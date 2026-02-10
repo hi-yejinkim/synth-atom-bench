@@ -58,7 +58,7 @@ def example_scaling_curves():
     rng = np.random.default_rng(42)
     results = {}
     flops_vals = np.array([1e15, 4e15, 1.6e16, 6.4e16, 2.56e17])
-    for i, arch in enumerate(["PaiNN", "Transformer", "Pairformer", "EquiformerV2"]):
+    for i, arch in enumerate(["PaiNN", "Transformer", "Pairformer"]):
         alpha = 0.3 + 0.15 * i
         a = 2.0 - 0.2 * i
         floor = 0.01 + 0.005 * i
@@ -80,9 +80,9 @@ def example_scaling_curves():
 def example_capability_heatmap():
     """Generate dummy capability heatmap."""
     rng = np.random.default_rng(123)
-    archs = ["PaiNN", "Transformer", "Pairformer", "EquiformerV2"]
+    archs = ["PaiNN", "Transformer", "Pairformer"]
     datasets = ["N10 \u03b7=0.1", "N10 \u03b7=0.3", "N50 \u03b7=0.3", "N10 \u03b7=0.5"]
-    data = rng.uniform(0.01, 0.6, size=(4, 4))
+    data = rng.uniform(0.01, 0.6, size=(3, 4))
     # Make harder datasets have higher clash rates
     data[:, 2:] += 0.15
     data = np.clip(data, 0, 1)

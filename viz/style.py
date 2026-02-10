@@ -10,13 +10,11 @@ import matplotlib.pyplot as plt
 # Architecture visual identity
 ARCH_COLORS = {
     "PaiNN": "#4C72B0",
-    "EquiformerV2": "#55A868",
     "Transformer": "#C44E52",
     "Pairformer": "#8172B3",
 }
 ARCH_MARKERS = {
     "PaiNN": "o",
-    "EquiformerV2": "s",
     "Transformer": "^",
     "Pairformer": "D",
 }
