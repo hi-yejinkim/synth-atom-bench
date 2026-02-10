@@ -197,6 +197,10 @@ synthbench3d/
 - Hydra for configs
 - wandb for logging
 - numpy for data generation
+- Package manager: always use `uv` (never pip)
+  - Install packages: `uv add <package>`
+  - Run scripts: `uv run <script>`
+  - Sync environment: `uv sync`
 
 ## W&B Setup
 
