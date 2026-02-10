@@ -104,18 +104,18 @@ Generate 10k samples per model, report clash rate.
 
 This is the core experiment. We want scaling curves: clash_rate vs. compute for each architecture.
 
-For each total compute budget C (measured in GPU-hours):
+For each total compute budget C (measured in total training FLOPs):
 1. For each architecture, sweep model size (width, depth) and training steps
 2. Constraint: FLOPs_per_step × num_steps ≤ C
 3. Tune learning rate (5 trials, log-uniform in [1e-5, 1e-3])
 4. Report best clash rate at each budget
 
-Budgets: 1, 4, 16, 64, 256 GPU-hours.
+Budgets (total training FLOPs): 1e15, 4e15, 1.6e16, 6.4e16, 2.56e17.
 
 Fit scaling law per architecture:
 
 ```
-clash_rate(C) = a × C^(-α) + floor
+clash_rate(C) = a × C^(-α) + floor      (C = total training FLOPs)
 ```
 
 - **α** (scaling exponent): how fast performance improves with compute. Higher = better scaling. This is the main result.
@@ -161,6 +161,14 @@ synthbench3d/
 │   └── sampling.py
 ├── metrics/
 │   └── clash_rate.py
+├── viz/
+│   ├── style.py                # Global style: fonts, colors, save_figure
+│   ├── structure.py            # 3D atom structure plots
+│   ├── metrics.py              # g(r) and min distance histogram
+│   ├── scaling.py              # Scaling curves and capability heatmap
+│   ├── training.py             # Training loss/clash rate curves
+│   └── examples/
+│       └── generate_examples.py  # Visual QA script
 ├── experiments/
 │   ├── train.py
 │   ├── evaluate.py
@@ -190,6 +198,11 @@ synthbench3d/
 - wandb for logging
 - numpy for data generation
 
+## W&B Setup
+
+- W&B login token is sourced from `~/.zshrc` (environment variable)
+- No need to run `wandb login` manually — token is available in the shell environment
+
 ## Output Directory Convention
 
 All generated artifacts go under `outputs/`, never mixed with source code:
@@ -217,5 +230,6 @@ Rules:
 - All models share the same flow matching framework — the only variable is the velocity network architecture
 - Same ODE sampler (Euler, same steps) for all models at evaluation
 - Same training data, same augmentation (random rotations for all)
-- FLOPs measured with torch profiler for fair compute matching
+- FLOPs measured with torch profiler for fair compute matching — total training FLOPs (not GPU-hours) is the x-axis for all scaling curves
 - Use established reference implementations (SchNetPack, SimpleFold, Boltz) to minimize implementation bugs — only write thin wrappers (timestep embedding + output projection)
+- All visualization uses the `viz/` package with `synthbench_style()` context manager for consistent publication-quality plots
