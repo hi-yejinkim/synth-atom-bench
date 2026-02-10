@@ -52,22 +52,38 @@ Sampling: ODE integration from x_0 ~ N(0, I) to x_1 using Euler method with fixe
 
 All architectures take atom positions x_t and timestep t as input, output predicted velocity of same shape (N×3).
 
-**GNN (SchNet-style)**
-- Continuous-filter convolution with radial basis functions on pairwise distances
+**GNN (PaiNN)**
+- Equivariant message passing with both scalar and vector features per atom
+- Continuous-filter convolutions with radial basis functions on pairwise distances
+- Vector features naturally map to velocity output (equivariant by construction)
 - K message passing layers
 - Local: each atom aggregates info from neighbors within cutoff
+- Reference implementation: SchNetPack (https://github.com/atomistic-machine-learning/schnetpack)
+  - Extract PaiNN representation from `schnetpack.representation`
+  - Wrap as velocity network: add timestep embedding, read out velocity from vector features
+  - Paper: "Equivariant message passing for the prediction of tensorial properties and molecular spectra" (Schütt et al., 2021)
 
 **Transformer**
 - Global self-attention over all atoms
 - Pairwise distance features injected as attention bias
 - No built-in equivariance, use random rotation augmentation
-- Sinusoidal timestep embedding added to atom features
+- Sinusoidal timestep embedding added to atom features via adaptive layer norm
+- Reference implementation: SimpleFold (https://github.com/apple/ml-simplefold)
+  - Uses standard transformer blocks with adaptive layers + flow matching — exactly our setup
+  - Extract the FoldingDiT transformer blocks from `simplefold.model`
+  - Already uses flow matching, so the integration is natural
+  - Paper: "SimpleFold: Folding Proteins is Simpler than You Think" (Apple, 2025)
 
-**Pairformer (AlphaFold2-style)**
+**Pairformer (AlphaFold2/Boltz-style)**
 - Single representation (per-atom) + pair representation (per-atom-pair)
 - Pair representation initialized from pairwise distance features
 - Triangular multiplicative updates on pair representation
 - Attention on single representation weighted by pair representation
+- Reference implementation: Boltz (https://github.com/jwohlwend/boltz)
+  - Extract PairformerStack from `boltz.model`
+  - Well-tested against AlphaFold3 architecture
+  - More complex codebase — extract only the Pairformer module, not the full pipeline
+  - Paper: "Boltz-1: Democratizing Biomolecular Interaction Modeling" (Wohlwend et al., 2024)
 
 ## Metric
 
@@ -126,19 +142,19 @@ synthbench3d/
 ├── configs/                    # Hydra configs
 │   ├── data/
 │   ├── model/
-│   │   ├── gnn.yaml
-│   │   ├── transformer.yaml
-│   │   └── pairformer.yaml
+│   │   ├── gnn.yaml            # PaiNN from SchNetPack
+│   │   ├── transformer.yaml    # Transformer from SimpleFold
+│   │   └── pairformer.yaml     # Pairformer from Boltz
 │   └── experiment/
 ├── data/
 │   ├── generate.py             # MCMC hard sphere sampler
 │   ├── dataset.py              # PyTorch dataset
 │   └── validate.py             # Check g(r) of generated data
 ├── models/
-│   ├── gnn.py
-│   ├── transformer.py
-│   ├── pairformer.py
-│   └── common.py               # Shared layers
+│   ├── gnn.py                  # Wrapper around SchNetPack PaiNN
+│   ├── transformer.py          # Wrapper around SimpleFold transformer
+│   ├── pairformer.py           # Wrapper around Boltz Pairformer
+│   └── common.py               # Shared: timestep embedding, output projection
 ├── flow_matching/
 │   ├── interpolation.py
 │   ├── training.py
@@ -160,9 +176,9 @@ synthbench3d/
 2. `data/dataset.py` — PyTorch dataset loading .npz files
 3. `metrics/clash_rate.py` — GPU-accelerated clash rate computation
 4. `flow_matching/` — shared interpolation, loss, ODE sampler
-5. `models/gnn.py` — SchNet denoiser
-6. `models/transformer.py` — transformer denoiser
-7. `models/pairformer.py` — pairformer denoiser
+5. `models/gnn.py` — wrap SchNetPack PaiNN as velocity network
+6. `models/transformer.py` — wrap SimpleFold transformer blocks as velocity network
+7. `models/pairformer.py` — wrap Boltz PairformerStack as velocity network
 8. `experiments/train.py` — training loop with Hydra configs
 9. `experiments/evaluate.py` — generate samples + compute clash rate
 10. `experiments/scaling.py` — compute-matched sweep
@@ -174,9 +190,32 @@ synthbench3d/
 - wandb for logging
 - numpy for data generation
 
+## Output Directory Convention
+
+All generated artifacts go under `outputs/`, never mixed with source code:
+
+```
+outputs/
+├── data/{N}_{eta}/          # Generated .npz datasets (e.g. N10_eta0.1/)
+├── plots/                   # All visualizations and figures
+├── checkpoints/{arch}/      # Model weights (gnn/, transformer/, pairformer/)
+├── logs/{arch}/             # Training logs
+├── eval/{arch}/             # Evaluation results (generated samples + metrics)
+└── scaling/                 # Scaling law sweep results
+```
+
+Rules:
+- **Never write files to source directories** (`data/`, `metrics/`, `models/`, etc.). All outputs (data, plots, checkpoints, logs) go under `outputs/`.
+- **Always use `--output` flags** pointing into `outputs/` when running scripts. Example: `python data/generate.py --output outputs/data/N10_eta0.1/train.npz`
+- **Clean up after test/debug runs.** If you generate temporary files for testing (e.g. small sample counts, scratch plots), delete them when done. Do not leave behind files named `test_*`, `tmp_*`, `debug_*`, or similar in `outputs/`.
+- **No stale checkpoints.** When a training run is superseded or was a failed experiment, remove its checkpoint directory rather than leaving dead weights around.
+- **Name files descriptively.** Use the pattern `{split}_{setting}.npz` for data (e.g. `train.npz`, `val.npz`, `test.npz`) and `{description}.png` for plots. Never use generic names like `output.npz` or `plot.png`.
+- **The `outputs/` directory is gitignored.** It must never be committed. If a result needs to be preserved, export it to a report or wandb.
+
 ## Key Design Decisions
 
 - All models share the same flow matching framework — the only variable is the velocity network architecture
 - Same ODE sampler (Euler, same steps) for all models at evaluation
 - Same training data, same augmentation (random rotations for all)
 - FLOPs measured with torch profiler for fair compute matching
+- Use established reference implementations (SchNetPack, SimpleFold, Boltz) to minimize implementation bugs — only write thin wrappers (timestep embedding + output projection)

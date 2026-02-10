@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "synthbench3d"
+version = "0.1.0"
+description = "Hard sphere packing benchmark for 3D generative models"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.21",
+    "torch>=2.0",
+    "matplotlib>=3.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["data", "metrics"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
