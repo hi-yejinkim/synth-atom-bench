@@ -1,0 +1,16 @@
+defaults:
+  - train
+
+train:
+  max_steps: 10000
+
+eval:
+  every_n_steps: 2000
+  n_samples: 500
+
+checkpoint:
+  every_n_steps: 5000
+
+hydra:
+  job:
+    chdir: false

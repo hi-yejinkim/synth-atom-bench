@@ -1,0 +1,4 @@
+data_dir: outputs/data/N10_eta0.1
+n_atoms: 10
+eta: 0.1
+radius: 0.5

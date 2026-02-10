@@ -1,0 +1,30 @@
+defaults:
+  - data: medium_small
+  - model: painn
+  - logging: logging
+  - _self_
+
+train:
+  max_steps: 50000
+  batch_size: 64
+  lr: 3e-4
+  weight_decay: 1e-4
+  warmup_fraction: 0.05
+  grad_clip_norm: 1.0
+  seed: 42
+
+eval:
+  every_n_steps: 5000
+  n_samples: 1000
+  n_ode_steps: 100
+  sample_batch_size: 256
+
+checkpoint:
+  every_n_steps: 10000
+
+augmentation:
+  random_rotation: true
+
+hydra:
+  job:
+    chdir: false

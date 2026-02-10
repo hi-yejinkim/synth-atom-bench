@@ -1,0 +1,8 @@
+arch: transformer
+model_kwargs:
+  hidden_dim: 128
+  num_layers: 6
+  num_heads: 8
+  num_rbf: 64
+  cutoff: 10.0  # overridden at runtime to box_size * 1.5
+  mlp_ratio: 4.0
