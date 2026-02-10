@@ -23,7 +23,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["data", "metrics", "experiments", "viz"]
+packages = ["data", "metrics", "experiments", "viz", "models", "flow_matching"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
