@@ -59,8 +59,8 @@ All architectures take atom positions x_t and timestep t as input, output predic
 - K message passing layers
 - Local: each atom aggregates info from neighbors within cutoff
 - Reference implementation: SchNetPack (https://github.com/atomistic-machine-learning/schnetpack)
-  - Extract PaiNN representation from `schnetpack.representation`
-  - Wrap as velocity network: add timestep embedding, read out velocity from vector features
+  - Extract PaiNN representation from `schnetpack.representation` — reimplement faithfully based on their code
+  - Reimplement as velocity network: add timestep embedding, read out velocity from vector features
   - Paper: "Equivariant message passing for the prediction of tensorial properties and molecular spectra" (Schütt et al., 2021)
 
 **Transformer**
@@ -142,7 +142,7 @@ synthbench3d/
 ├── configs/                    # Hydra configs
 │   ├── data/
 │   ├── model/
-│   │   ├── gnn.yaml            # PaiNN from SchNetPack
+│   │   ├── gnn.yaml            # PaiNN (custom implementation)
 │   │   ├── transformer.yaml    # Transformer from SimpleFold
 │   │   └── pairformer.yaml     # Pairformer from Boltz
 │   └── experiment/
@@ -151,7 +151,7 @@ synthbench3d/
 │   ├── dataset.py              # PyTorch dataset
 │   └── validate.py             # Check g(r) of generated data
 ├── models/
-│   ├── gnn.py                  # Wrapper around SchNetPack PaiNN
+│   ├── gnn.py                  # PaiNN implementation (from scratch)
 │   ├── transformer.py          # Wrapper around SimpleFold transformer
 │   ├── pairformer.py           # Wrapper around Boltz Pairformer
 │   └── common.py               # Shared: timestep embedding, output projection
@@ -184,7 +184,7 @@ synthbench3d/
 2. `data/dataset.py` — PyTorch dataset loading .npz files
 3. `metrics/clash_rate.py` — GPU-accelerated clash rate computation
 4. `flow_matching/` — shared interpolation, loss, ODE sampler
-5. `models/gnn.py` — wrap SchNetPack PaiNN as velocity network
+5. `models/gnn.py` — implement PaiNN from scratch as velocity network
 6. `models/transformer.py` — wrap SimpleFold transformer blocks as velocity network
 7. `models/pairformer.py` — wrap Boltz PairformerStack as velocity network
 8. `experiments/train.py` — training loop with Hydra configs
@@ -231,5 +231,5 @@ Rules:
 - Same ODE sampler (Euler, same steps) for all models at evaluation
 - Same training data, same augmentation (random rotations for all)
 - FLOPs measured with torch profiler for fair compute matching — total training FLOPs (not GPU-hours) is the x-axis for all scaling curves
-- Use established reference implementations (SchNetPack, SimpleFold, Boltz) to minimize implementation bugs — only write thin wrappers (timestep embedding + output projection)
+- Use established reference implementations (SchNetPack, SimpleFold, Boltz) — reimplement faithfully based on their code rather than importing as dependencies, adding only timestep embedding + output projection
 - All visualization uses the `viz/` package with `synthbench_style()` context manager for consistent publication-quality plots
