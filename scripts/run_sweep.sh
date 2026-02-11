@@ -1,10 +1,10 @@
 #!/bin/bash
-# Run hyperparameter sweep: generate data if needed, sweep, summarize.
+# Run hyperparameter sweep using Hydra multirun with joblib launcher (8 GPUs).
 set -euo pipefail
 
 DATA_DIR="outputs/data/N10_eta0.3"
 SWEEP_DIR="${1:-outputs/sweep}"
-MAX_STEPS="${2:-10000}"
+MAX_STEPS="${2:-100000}"
 
 # Generate training data if not present
 if [ ! -f "$DATA_DIR/train.npz" ]; then
@@ -15,11 +15,18 @@ if [ ! -f "$DATA_DIR/train.npz" ]; then
     echo "Data generation complete."
 fi
 
-# Run sweep
-echo "Running hyperparameter sweep (max_steps=$MAX_STEPS)..."
-uv run python experiments/sweep_hparams.py run \
-    --sweep_dir "$SWEEP_DIR" \
-    --max_steps "$MAX_STEPS"
+echo "Running sweep (max_steps=$MAX_STEPS, 8 GPUs)..."
+uv run python experiments/train.py --multirun \
+    model=painn,transformer,pairformer \
+    model.size=small,medium,large \
+    train.lr=1e-5,3e-5,1e-4,3e-4,1e-3 \
+    train.max_steps=$MAX_STEPS \
+    hydra/launcher=joblib \
+    hydra.launcher.n_jobs=8 \
+    hydra.sweep.dir=$SWEEP_DIR \
+    'hydra.sweep.subdir=${model.arch}_${model.size}_lr${train.lr}' \
+    'checkpoint.dir='$SWEEP_DIR'/${model.arch}_${model.size}_lr${train.lr}' \
+    logging.enabled=true
 
 # Summarize results
 echo ""

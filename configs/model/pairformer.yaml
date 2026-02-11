@@ -1,4 +1,5 @@
 arch: pairformer
+size: medium
 model_kwargs:
   hidden_dim: 128
   pair_dim: 64

@@ -1,4 +1,5 @@
 arch: transformer
+size: medium
 model_kwargs:
   hidden_dim: 128
   num_layers: 6

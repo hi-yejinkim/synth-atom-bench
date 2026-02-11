@@ -12,19 +12,25 @@ import numpy as np
 # Model size presets: (name, kwargs_overrides)
 SIZE_PRESETS = {
     "painn": {
+        "xs": {"hidden_dim": 16, "n_layers": 2},
         "small": {"hidden_dim": 32, "n_layers": 3},
         "medium": {"hidden_dim": 128, "n_layers": 5},
         "large": {"hidden_dim": 256, "n_layers": 8},
+        "xl": {"hidden_dim": 512, "n_layers": 10},
     },
     "transformer": {
+        "xs": {"hidden_dim": 32, "num_layers": 2, "num_heads": 2},
         "small": {"hidden_dim": 64, "num_layers": 3, "num_heads": 4},
         "medium": {"hidden_dim": 128, "num_layers": 6, "num_heads": 8},
         "large": {"hidden_dim": 256, "num_layers": 8, "num_heads": 8},
+        "xl": {"hidden_dim": 384, "num_layers": 10, "num_heads": 8},
     },
     "pairformer": {
+        "xs": {"hidden_dim": 32, "pair_dim": 16, "num_layers": 1, "num_heads": 2},
         "small": {"hidden_dim": 64, "pair_dim": 32, "num_layers": 2, "num_heads": 4},
         "medium": {"hidden_dim": 128, "pair_dim": 64, "num_layers": 4, "num_heads": 8},
         "large": {"hidden_dim": 256, "pair_dim": 128, "num_layers": 6, "num_heads": 8},
+        "xl": {"hidden_dim": 384, "pair_dim": 192, "num_layers": 8, "num_heads": 8},
     },
 }
 
@@ -35,6 +41,7 @@ def build_hydra_overrides(arch: str, size: str, lr: float, max_steps: int, outpu
     """Build Hydra CLI override strings for a sweep run."""
     overrides = [
         f"model={arch}",
+        f"model.size={size}",
         f"train.lr={lr}",
         f"train.max_steps={max_steps}",
     ]
@@ -69,6 +76,7 @@ def generate_commands(args):
         ckpt_dir = os.path.join(args.sweep_dir, run_name)
         cmd = (
             f"uv run python experiments/train.py {override_str} "
+            f"checkpoint.dir={ckpt_dir} "
             f"logging.enabled={str(args.wandb).lower()} "
             f"hydra.run.dir={ckpt_dir}"
         )
@@ -190,7 +198,7 @@ def main():
     # Common args
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--sweep_dir", default="outputs/sweep", help="Base directory for sweep outputs")
-    common.add_argument("--max_steps", type=int, default=10000, help="Training steps per run")
+    common.add_argument("--max_steps", type=int, default=100000, help="Training steps per run")
     common.add_argument("--archs", default=None, help="Comma-separated architectures (default: all)")
     common.add_argument("--sizes", default=None, help="Comma-separated sizes (default: small,medium,large)")
     common.add_argument("--lrs", default=None, help="Comma-separated learning rates")

@@ -5,8 +5,8 @@ defaults:
   - _self_
 
 train:
-  max_steps: 50000
-  batch_size: 64
+  max_steps: 100000
+  batch_size: 256
   lr: 3e-4
   weight_decay: 1e-4
   warmup_fraction: 0.05
@@ -21,6 +21,7 @@ eval:
 
 checkpoint:
   every_n_steps: 10000
+  dir: null
 
 augmentation:
   random_rotation: true

@@ -1,4 +1,5 @@
 arch: painn
+size: medium
 model_kwargs:
   hidden_dim: 128
   n_layers: 5

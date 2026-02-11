@@ -115,32 +115,34 @@ class Logger:
         metrics: dict = {"eval/clash_rate": cr}
 
         # g(r) plot
+        import os
+        import matplotlib.pyplot as plt
+
         pos_np = positions.cpu().numpy()
         r, g_r = pair_correlation(pos_np, box_size)
+        tmp_files = []
+
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             gr_path = f.name
-        try:
-            fig = plot_gr(r, g_r, radius)
-            fig.savefig(gr_path, dpi=150)
-            import matplotlib.pyplot as plt
-            plt.close(fig)
-            metrics["eval/pair_correlation"] = self._wandb.Image(gr_path)
-        finally:
-            import os
-            os.unlink(gr_path)
+        tmp_files.append(gr_path)
+        fig = plot_gr(r, g_r, radius)
+        fig.savefig(gr_path, dpi=150)
+        plt.close(fig)
+        metrics["eval/pair_correlation"] = self._wandb.Image(gr_path)
 
         # Min distance histogram
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             hist_path = f.name
-        try:
-            fig = plot_min_distance_hist(pos_np, radius)
-            fig.savefig(hist_path, dpi=150)
-            plt.close(fig)
-            metrics["eval/min_distance_hist"] = self._wandb.Image(hist_path)
-        finally:
-            os.unlink(hist_path)
+        tmp_files.append(hist_path)
+        fig = plot_min_distance_hist(pos_np, radius)
+        fig.savefig(hist_path, dpi=150)
+        plt.close(fig)
+        metrics["eval/min_distance_hist"] = self._wandb.Image(hist_path)
 
         self._wandb.log(metrics, step=step)
+
+        for p in tmp_files:
+            os.unlink(p)
 
     def log_model_config(
         self,

@@ -22,7 +22,7 @@ argparse.ArgumentParser.add_argument = _patched_add_argument
 import hydra
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
 
 from data.dataset import HardSphereDataset
@@ -39,6 +39,30 @@ MODEL_REGISTRY = {
     "painn": PaiNNVelocityNetwork,
     "transformer": TransformerVelocityNetwork,
     "pairformer": PairformerVelocityNetwork,
+}
+
+SIZE_PRESETS = {
+    "painn": {
+        "xs": {"hidden_dim": 16, "n_layers": 2},
+        "small": {"hidden_dim": 32, "n_layers": 3},
+        "medium": {"hidden_dim": 128, "n_layers": 5},
+        "large": {"hidden_dim": 256, "n_layers": 8},
+        "xl": {"hidden_dim": 512, "n_layers": 10},
+    },
+    "transformer": {
+        "xs": {"hidden_dim": 32, "num_layers": 2, "num_heads": 2},
+        "small": {"hidden_dim": 64, "num_layers": 3, "num_heads": 4},
+        "medium": {"hidden_dim": 128, "num_layers": 6, "num_heads": 8},
+        "large": {"hidden_dim": 256, "num_layers": 8, "num_heads": 8},
+        "xl": {"hidden_dim": 384, "num_layers": 10, "num_heads": 8},
+    },
+    "pairformer": {
+        "xs": {"hidden_dim": 32, "pair_dim": 16, "num_layers": 1, "num_heads": 2},
+        "small": {"hidden_dim": 64, "pair_dim": 32, "num_layers": 2, "num_heads": 4},
+        "medium": {"hidden_dim": 128, "pair_dim": 64, "num_layers": 4, "num_heads": 8},
+        "large": {"hidden_dim": 256, "pair_dim": 128, "num_layers": 6, "num_heads": 8},
+        "xl": {"hidden_dim": 384, "pair_dim": 192, "num_layers": 8, "num_heads": 8},
+    },
 }
 
 
@@ -126,12 +150,31 @@ def evaluate(
 
 @hydra.main(config_path="../configs", config_name="train", version_base=None)
 def main(cfg: DictConfig) -> None:
+    # Resolve size preset into model_kwargs
+    size = cfg.model.get("size")
+    if size and cfg.model.arch in SIZE_PRESETS:
+        preset = SIZE_PRESETS[cfg.model.arch][size]
+        with open_dict(cfg):
+            for k, v in preset.items():
+                cfg.model.model_kwargs[k] = v
+
     # Seed
     torch.manual_seed(cfg.train.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(cfg.train.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # GPU assignment: distribute multirun jobs across GPUs
+    if torch.cuda.is_available():
+        try:
+            from hydra.core.hydra_config import HydraConfig
+            job_num = HydraConfig.get().job.num
+        except Exception:
+            job_num = 0
+        gpu_id = job_num % torch.cuda.device_count()
+        torch.cuda.set_device(gpu_id)
+        device = torch.device(f"cuda:{gpu_id}")
+    else:
+        device = torch.device("cpu")
     print(f"Device: {device}")
 
     # Load dataset
@@ -172,7 +215,7 @@ def main(cfg: DictConfig) -> None:
     print(f"FLOPs per step: {flops_per_step:.2e}")
 
     # Checkpoint dir
-    checkpoint_dir = os.path.join("outputs", "checkpoints", cfg.model.arch)
+    checkpoint_dir = cfg.checkpoint.get("dir") or os.path.join("outputs", "checkpoints", cfg.model.arch)
     ckpt_mgr = CheckpointManager(checkpoint_dir)
 
     # Resume from checkpoint if available
@@ -276,6 +319,8 @@ def main(cfg: DictConfig) -> None:
     print(f"Final clash rate: {cr:.4f} | Best: {ckpt_mgr.best_clash_rate:.4f}")
 
     logger.finish()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     print("Done.")
 
 
