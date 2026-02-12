@@ -6,6 +6,7 @@ defaults:
 
 train:
   max_steps: 100000
+  budget: null  # if set, overrides max_steps = budget / flops_per_step
   batch_size: 256
   lr: 3e-4
   weight_decay: 1e-4

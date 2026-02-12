@@ -187,8 +187,16 @@ def generate_grid(args):
     print(f"\n# Grid metadata saved to {meta_path}", file=sys.stderr)
 
 
+def _extract_run_name_from_cmd(cmd: str) -> str:
+    """Extract run name from checkpoint.dir in a command string."""
+    for part in cmd.split():
+        if part.startswith("checkpoint.dir="):
+            return os.path.basename(part.split("=", 1)[1])
+    return ""
+
+
 def run_grid(args):
-    """Execute scaling grid commands sequentially."""
+    """Execute scaling grid commands, optionally in parallel across GPUs."""
     import io
     from contextlib import redirect_stdout
 
@@ -203,14 +211,85 @@ def run_grid(args):
         if line.strip() and not line.startswith("#")
     ]
 
-    print(f"Running {len(commands)} scaling jobs...")
-    for i, cmd in enumerate(commands):
-        print(f"\n{'='*60}")
-        print(f"Job {i+1}/{len(commands)}: {cmd}")
-        print(f"{'='*60}")
-        result = subprocess.run(cmd, shell=True)
-        if result.returncode != 0:
-            print(f"Warning: job {i+1} exited with code {result.returncode}", file=sys.stderr)
+    # Skip already-completed runs
+    remaining = []
+    for cmd in commands:
+        run_name = _extract_run_name_from_cmd(cmd)
+        best_pt = os.path.join(args.scaling_dir, run_name, "best.pt")
+        if os.path.isfile(best_pt):
+            print(f"Skipping (already done): {run_name}")
+        else:
+            remaining.append(cmd)
+
+    print(f"\n{len(commands)} total, {len(commands) - len(remaining)} done, {len(remaining)} remaining")
+
+    n_gpus = args.n_gpus
+    if n_gpus <= 1:
+        # Sequential execution
+        for i, cmd in enumerate(remaining):
+            print(f"\n{'='*60}")
+            print(f"Job {i+1}/{len(remaining)}: {cmd}")
+            print(f"{'='*60}")
+            result = subprocess.run(cmd, shell=True)
+            if result.returncode != 0:
+                print(f"Warning: job {i+1} exited with code {result.returncode}", file=sys.stderr)
+    else:
+        # Parallel execution: run n_gpus jobs at a time, each pinned to a GPU
+        import time
+        active: dict[int, tuple[subprocess.Popen, str, int]] = {}  # gpu_id -> (proc, name, job_idx)
+        job_queue = list(enumerate(remaining))
+        total = len(remaining)
+        completed = 0
+        failed = 0
+
+        def _launch(gpu_id: int, job_idx: int, cmd: str):
+            run_name = _extract_run_name_from_cmd(cmd)
+            log_path = os.path.join(args.scaling_dir, run_name, "train.log")
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            log_f = open(log_path, "w")
+            env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu_id)}
+            proc = subprocess.Popen(cmd, shell=True, stdout=log_f, stderr=subprocess.STDOUT, env=env)
+            proc._log_file = log_f  # keep reference to close later
+            active[gpu_id] = (proc, run_name, job_idx)
+            print(f"  [GPU {gpu_id}] Started job {job_idx+1}/{total}: {run_name}")
+
+        # Fill initial slots
+        for gpu_id in range(min(n_gpus, len(job_queue))):
+            job_idx, cmd = job_queue.pop(0)
+            _launch(gpu_id, job_idx, cmd)
+
+        # Process until all done
+        while active:
+            time.sleep(5)
+            for gpu_id in list(active.keys()):
+                proc, run_name, job_idx = active[gpu_id]
+                ret = proc.poll()
+                if ret is not None:
+                    proc._log_file.close()
+                    del active[gpu_id]
+                    if ret == 0:
+                        completed += 1
+                        print(f"  [GPU {gpu_id}] Completed ({completed}/{total}): {run_name}")
+                    else:
+                        failed += 1
+                        completed += 1
+                        print(f"  [GPU {gpu_id}] Failed ({completed}/{total}): {run_name} (exit {ret})")
+                    # Launch next job on this GPU
+                    if job_queue:
+                        next_idx, next_cmd = job_queue.pop(0)
+                        _launch(gpu_id, next_idx, next_cmd)
+
+        print(f"\nAll done: {completed - failed} succeeded, {failed} failed out of {total}")
+
+
+def _count_params(arch: str, model_kwargs: dict) -> int:
+    """Instantiate model to count parameters (no GPU needed)."""
+    try:
+        kwargs = {**MODEL_DEFAULTS.get(arch, {}), **model_kwargs}
+        model = MODEL_REGISTRY[arch](**kwargs)
+        return sum(p.numel() for p in model.parameters())
+    except Exception:
+        return 0
 
 
 def collect_results(args):
@@ -220,17 +299,8 @@ def collect_results(args):
         print(f"Scaling directory not found: {scaling_dir}", file=sys.stderr)
         sys.exit(1)
 
-    # Load grid metadata if available
-    meta_path = os.path.join(scaling_dir, "grid_meta.json")
-    meta = {}
-    if os.path.isfile(meta_path):
-        with open(meta_path) as f:
-            meta = json.load(f)
-
-    # Build lookup from run name to metadata
-    run_meta = {}
-    for r in meta.get("runs", []):
-        run_meta[r["name"]] = r
+    # Cache param counts to avoid repeated instantiation
+    param_cache = {}
 
     results = []
     for run_name in sorted(os.listdir(scaling_dir)):
@@ -240,9 +310,7 @@ def collect_results(args):
 
         # Find best.pt
         best_pt = None
-        for candidate in [
-            os.path.join(run_dir, "best.pt"),
-        ]:
+        for candidate in [os.path.join(run_dir, "best.pt")]:
             if os.path.isfile(candidate):
                 best_pt = candidate
                 break
@@ -259,18 +327,21 @@ def collect_results(args):
             config = data.get("config", {})
             arch = config.get("model", {}).get("arch", "unknown")
             model_kwargs = config.get("model", {}).get("model_kwargs", {})
+            size = config.get("model", {}).get("size", "unknown")
             lr = config.get("train", {}).get("lr", 0)
+            budget = config.get("train", {}).get("budget", 0) or 0
+            max_steps = config.get("train", {}).get("max_steps", 0)
             cr = data.get("best_clash_rate", float("inf"))
             step = data.get("step", 0)
 
-            # Get metadata from grid
-            rm = run_meta.get(run_name, {})
-            budget = rm.get("budget", 0)
-            flops_per_step = rm.get("flops_per_step", 0)
-            size = rm.get("size", "unknown")
-            n_params = meta.get("params_table", {}).get(f"{arch}_{size}", 0)
+            # Count params (cached)
+            cache_key = f"{arch}_{size}"
+            if cache_key not in param_cache:
+                param_cache[cache_key] = _count_params(arch, model_kwargs)
+            n_params = param_cache[cache_key]
 
-            # Compute actual total FLOPs
+            # Compute flops_per_step from budget and max_steps
+            flops_per_step = budget / max_steps if (budget and max_steps) else 0
             total_flops = flops_per_step * step if flops_per_step else 0
 
             results.append({
@@ -278,7 +349,7 @@ def collect_results(args):
                 "arch": arch,
                 "size": size,
                 "lr": lr,
-                "budget": budget,
+                "budget": float(budget),
                 "best_clash_rate": cr,
                 "step": step,
                 "n_params": n_params,
@@ -488,6 +559,7 @@ def main():
     common.add_argument("--batch_size", type=int, default=256, help="Batch size for FLOPs measurement")
     common.add_argument("--n_atoms", type=int, default=10, help="Number of atoms")
     common.add_argument("--wandb", action="store_true", help="Enable W&B logging")
+    common.add_argument("--n_gpus", type=int, default=1, help="Number of GPUs for parallel execution")
 
     # Subcommands
     subparsers.add_parser("generate", parents=[common], help="Measure FLOPs and print grid commands")

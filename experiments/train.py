@@ -202,6 +202,25 @@ def main(cfg: DictConfig) -> None:
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Architecture: {cfg.model.arch} | Parameters: {n_params:,}")
 
+    # FLOPs estimation
+    flops_per_step = count_flops(model, n_atoms, cfg.train.batch_size, device)
+    print(f"FLOPs per step: {flops_per_step:.2e}")
+
+    # Budget mode: compute max_steps from budget / flops_per_step
+    budget = cfg.train.get("budget")
+    if budget is not None and float(budget) > 0:
+        budget = float(budget)
+        computed_steps = int(budget / flops_per_step)
+        if computed_steps < 2000:
+            print(f"Budget {budget:.0e}: only {computed_steps} steps (< 2000 min). Skipping.")
+            return
+        if computed_steps > 1_000_000:
+            print(f"Budget {budget:.0e}: needs {computed_steps} steps (> 1M max). Skipping.")
+            return
+        with open_dict(cfg):
+            cfg.train.max_steps = computed_steps
+        print(f"Budget {budget:.0e}: training for {computed_steps} steps")
+
     # Optimizer + scheduler
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -209,10 +228,6 @@ def main(cfg: DictConfig) -> None:
         weight_decay=cfg.train.weight_decay,
     )
     scheduler = build_scheduler(optimizer, cfg)
-
-    # FLOPs estimation
-    flops_per_step = count_flops(model, n_atoms, cfg.train.batch_size, device)
-    print(f"FLOPs per step: {flops_per_step:.2e}")
 
     # Checkpoint dir
     checkpoint_dir = cfg.checkpoint.get("dir") or os.path.join("outputs", "checkpoints", cfg.model.arch)
