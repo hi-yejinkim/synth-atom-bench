@@ -4,7 +4,7 @@ import torch
 import pytest
 
 from models.painn import PaiNNVelocityNetwork, GaussianRBF, CosineCutoff
-from models.common import SinusoidalTimestepEmbedding, OutputMLP
+from models.common import SinusoidalTimestepEmbedding
 
 
 class TestSinusoidalTimestepEmbedding:
@@ -27,13 +27,6 @@ class TestSinusoidalTimestepEmbedding:
         # All three embeddings should be different
         assert not torch.allclose(result[0], result[1])
         assert not torch.allclose(result[1], result[2])
-
-
-class TestOutputMLP:
-    def test_output_shape(self):
-        mlp = OutputMLP(64, 128, 3)
-        x = torch.randn(16, 64)
-        assert mlp(x).shape == (16, 3)
 
 
 class TestGaussianRBF:

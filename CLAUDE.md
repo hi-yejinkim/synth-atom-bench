@@ -107,7 +107,7 @@ This is the core experiment. We want scaling curves: clash_rate vs. compute for 
 For each total compute budget C (measured in total training FLOPs):
 1. For each architecture, sweep model size (width, depth) and training steps
 2. Constraint: FLOPs_per_step × num_steps ≤ C
-3. Tune learning rate (5 trials, log-uniform in [1e-5, 1e-3])
+3. Tune learning rate (2 trials: 1e-4, 1e-3)
 4. Report best clash rate at each budget
 
 Budgets (total training FLOPs): 1e15, 4e15, 1.6e16, 6.4e16, 2.56e17.
@@ -137,24 +137,26 @@ clash_rate(C) = a × C^(-α) + floor      (C = total training FLOPs)
 ## Project Structure
 
 ```
-synthbench3d/
 ├── CLAUDE.md
 ├── configs/                    # Hydra configs
+│   ├── config.yaml
+│   ├── train.yaml
+│   ├── sweep.yaml
 │   ├── data/
 │   ├── model/
-│   │   ├── gnn.yaml            # PaiNN from SchNetPack
-│   │   ├── transformer.yaml    # Transformer from SimpleFold
-│   │   └── pairformer.yaml     # Pairformer from Boltz
-│   └── experiment/
+│   │   ├── painn.yaml
+│   │   ├── transformer.yaml
+│   │   └── pairformer.yaml
+│   └── logging/
 ├── data/
 │   ├── generate.py             # MCMC hard sphere sampler
 │   ├── dataset.py              # PyTorch dataset
 │   └── validate.py             # Check g(r) of generated data
 ├── models/
-│   ├── gnn.py                  # PaiNN velocity network from SchNetPack
+│   ├── painn.py                # PaiNN velocity network from SchNetPack
 │   ├── transformer.py          # Transformer velocity network from SimpleFold
 │   ├── pairformer.py           # Pairformer velocity network from Boltz
-│   └── common.py               # Shared: timestep embedding, output projection
+│   └── common.py               # Shared: timestep embedding
 ├── flow_matching/
 │   ├── interpolation.py
 │   ├── training.py
@@ -170,12 +172,22 @@ synthbench3d/
 │   └── examples/
 │       └── generate_examples.py  # Visual QA script
 ├── experiments/
-│   ├── train.py
-│   ├── evaluate.py
-│   └── scaling.py              # Run scaling law sweep
+│   ├── train.py                # Hydra-based training loop
+│   ├── evaluate.py             # Generate samples + compute clash rate
+│   ├── scaling.py              # Compute-matched scaling sweep
+│   ├── sweep_hparams.py        # Hyperparameter sweep orchestrator
+│   ├── model_registry.py       # Shared model registry and size presets
+│   ├── logger.py               # W&B logging wrapper
+│   └── checkpointing.py        # Checkpoint management
+├── scripts/
+│   ├── run_scaling.sh
+│   ├── run_sweep.sh
+│   └── validate_painn.py
 └── tests/
     ├── test_data.py
-    └── test_models.py
+    ├── test_models.py
+    ├── test_flow_matching.py
+    └── test_metrics.py
 ```
 
 ## Implementation Order
@@ -218,7 +230,8 @@ outputs/
 ├── checkpoints/{arch}/      # Model weights (gnn/, transformer/, pairformer/)
 ├── logs/{arch}/             # Training logs
 ├── eval/{arch}/             # Evaluation results (generated samples + metrics)
-└── scaling/                 # Scaling law sweep results
+├── scaling/                 # Scaling law sweep results
+└── experiment_logs/         # Persistent records of completed experiments
 ```
 
 Rules:

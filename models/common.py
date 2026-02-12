@@ -33,18 +33,3 @@ class SinusoidalTimestepEmbedding(nn.Module):
         if self.embed_dim % 2 == 1:
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
         return embedding
-
-
-class OutputMLP(nn.Module):
-    """Simple 2-layer MLP: Linear -> SiLU -> Linear."""
-
-    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, out_dim),
-        )
-
-    def forward(self, x: Tensor) -> Tensor:
-        return self.net(x)

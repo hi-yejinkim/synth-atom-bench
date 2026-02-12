@@ -9,30 +9,7 @@ from itertools import product
 
 import numpy as np
 
-# Model size presets: (name, kwargs_overrides)
-SIZE_PRESETS = {
-    "painn": {
-        "xs": {"hidden_dim": 16, "n_layers": 2},
-        "small": {"hidden_dim": 32, "n_layers": 3},
-        "medium": {"hidden_dim": 128, "n_layers": 5},
-        "large": {"hidden_dim": 256, "n_layers": 8},
-        "xl": {"hidden_dim": 512, "n_layers": 10},
-    },
-    "transformer": {
-        "xs": {"hidden_dim": 32, "num_layers": 2, "num_heads": 2},
-        "small": {"hidden_dim": 64, "num_layers": 3, "num_heads": 4},
-        "medium": {"hidden_dim": 128, "num_layers": 6, "num_heads": 8},
-        "large": {"hidden_dim": 256, "num_layers": 8, "num_heads": 8},
-        "xl": {"hidden_dim": 384, "num_layers": 10, "num_heads": 8},
-    },
-    "pairformer": {
-        "xs": {"hidden_dim": 32, "pair_dim": 16, "num_layers": 1, "num_heads": 2},
-        "small": {"hidden_dim": 64, "pair_dim": 32, "num_layers": 2, "num_heads": 4},
-        "medium": {"hidden_dim": 128, "pair_dim": 64, "num_layers": 4, "num_heads": 8},
-        "large": {"hidden_dim": 256, "pair_dim": 128, "num_layers": 6, "num_heads": 8},
-        "xl": {"hidden_dim": 384, "pair_dim": 192, "num_layers": 8, "num_heads": 8},
-    },
-}
+from experiments.model_registry import SIZE_PRESETS
 
 LEARNING_RATES = [1e-5, 3e-5, 1e-4, 3e-4, 1e-3]
 
