@@ -44,21 +44,33 @@ def _draw_box(ax, box_size: float):
                   linestyle="--", alpha=0.5)
 
 
+def _draw_bond(ax, pos1, pos2, color="#555555", linewidth=2):
+    """Draw a bond (line) between two atoms."""
+    ax.plot3D(
+        [pos1[0], pos2[0]], [pos1[1], pos2[1]], [pos1[2], pos2[2]],
+        color=color, linewidth=linewidth, alpha=0.7,
+    )
+
+
 def plot_structure(
     positions: np.ndarray,
     radius: float,
-    box_size: float,
+    box_size: float | None = None,
     ax=None,
     title: str | None = None,
+    bonds: list[tuple[int, int]] | None = None,
+    draw_box: bool = True,
 ) -> plt.Figure:
     """Plot a single 3D atom configuration.
 
     Args:
         positions: (N, 3) atom positions.
         radius: atom radius.
-        box_size: cubic box side length.
+        box_size: cubic box side length. If None, auto-computed from positions.
         ax: optional existing 3D axes.
         title: optional subplot title.
+        bonds: optional list of (i, j) index pairs to draw as bonds.
+        draw_box: whether to draw the wireframe box.
 
     Returns:
         The matplotlib Figure.
@@ -69,8 +81,24 @@ def plot_structure(
     else:
         fig = ax.get_figure()
 
+    # Auto-compute limits from positions if no box
+    if box_size is None:
+        margin = radius * 3
+        lo = positions.min(axis=0) - margin
+        hi = positions.max(axis=0) + margin
+    else:
+        lo = np.zeros(3)
+        hi = np.full(3, box_size)
+
     clashing = _find_clashing_atoms(positions, radius)
-    _draw_box(ax, box_size)
+
+    if draw_box and box_size is not None:
+        _draw_box(ax, box_size)
+
+    # Draw bonds first (behind atoms)
+    if bonds is not None:
+        for i, j in bonds:
+            _draw_bond(ax, positions[i], positions[j])
 
     color_ok = "#6BAED6"
     color_clash = "#E07A5F"
@@ -83,9 +111,9 @@ def plot_structure(
 
     ax.view_init(elev=20, azim=45)
     ax.set_box_aspect([1, 1, 1])
-    ax.set_xlim(0, box_size)
-    ax.set_ylim(0, box_size)
-    ax.set_zlim(0, box_size)
+    ax.set_xlim(lo[0], hi[0])
+    ax.set_ylim(lo[1], hi[1])
+    ax.set_zlim(lo[2], hi[2])
 
     # Light gray panes
     for pane in [ax.xaxis.pane, ax.yaxis.pane, ax.zaxis.pane]:

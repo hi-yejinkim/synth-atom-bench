@@ -1,14 +1,30 @@
-<p align="center">
-  <img src="docs/assets/hero_structures.png" width="90%" alt="Hard sphere configurations at different packing fractions">
-</p>
-
 # SynthBench3D
 
 **Scaling laws for 3D generative models via synthetic benchmarks.** Compare GNN, Transformer, and Pairformer architectures on controlled geometric tasks to predict which will scale best for 3D structure foundation models.
 
 ## Why synthetic benchmarks?
 
-Real molecular data is expensive and confounded — you can't isolate *why* one model beats another. SynthBench3D builds synthetic tasks with known ground truth (starting with hard sphere packing) where the only challenge is a single geometric constraint. By measuring how each architecture's performance improves with compute, we extract **scaling exponents** that predict which architectures will dominate at foundation-model scale — actionable information you can't get from standard benchmarks.
+Real molecular data is expensive and confounded — you can't isolate *why* one model beats another. SynthBench3D builds synthetic tasks with known ground truth where the only challenge is a single geometric constraint. By measuring how each architecture's performance improves with compute, we extract **scaling exponents** that predict which architectures will dominate at foundation-model scale — actionable information you can't get from standard benchmarks.
+
+<p align="center">
+  <img src="docs/assets/hero_structures.png" width="95%" alt="Hard sphere and chain configurations at increasing atom counts">
+</p>
+
+## Tasks
+
+Each task isolates a specific capability that 3D generative models need. Together they form a diagnostic suite that decomposes what makes 3D structure prediction hard.
+
+### Hard Sphere Packing
+
+Sample non-overlapping sphere configurations in a cubic box. The only constraint is **steric exclusion**: no two atoms can overlap (|x_i - x_j| > 2r). This tests a model's ability to learn **pairwise distance constraints** — the most fundamental geometric challenge. Difficulty is controlled by packing fraction (density) and atom count.
+
+**Metric**: clash rate (fraction of generated samples with any overlap).
+
+### Self-Avoiding Chains
+
+Sample self-avoiding polymer chains: atoms connected by fixed-length bonds that must not self-intersect. This adds **sequential bonded constraints** on top of clash avoidance — the model must learn valid chain topology where consecutive atoms maintain bond lengths while non-bonded atoms avoid overlap. This isolates the challenge of generating structures with **connectivity and long-range self-avoidance**. Difficulty scales with chain length N, since longer chains are exponentially harder to fold without self-intersection.
+
+**Metrics**: clash rate + bond length violation.
 
 ## Key Result: Compute Scaling Laws
 
@@ -28,23 +44,19 @@ For each architecture, we sweep model size and training steps under a fixed comp
 
 All architectures share the same **conditional flow matching** framework — the only variable is the velocity network. Same training data, same ODE sampler, same evaluation.
 
-## Data
-
-MCMC (Metropolis-Hastings) sampler generates non-overlapping sphere configurations in a cubic box. Difficulty controlled by packing fraction η = N·(4/3)πr³/L³. We validate samples via the pair correlation function g(r), which should show zero density below the exclusion diameter.
-
-<p align="center">
-  <img src="docs/assets/pair_correlation.png" width="50%" alt="Pair correlation function g(r)">
-</p>
-
 ## Quick Start
 
 ```bash
 # Install dependencies
 uv sync
 
-# Generate training data (N=10, η=0.3)
+# Generate training data (hard spheres: N=10, η=0.3)
 uv run data/generate.py --N 10 --eta 0.3 --radius 0.5 \
     --num_samples 50000 --output outputs/data/N10_eta0.3/train.npz
+
+# Generate training data (chains: N=20)
+uv run data/generate_chains.py --N 20 --num_samples 50000 \
+    --output outputs/data/chain_N20/train.npz
 
 # Train a PaiNN model
 uv run experiments/train.py model=painn data=default training.max_steps=50000
@@ -62,10 +74,10 @@ uv run experiments/scaling.py run --arch painn --budgets 1e15 4e15 1.6e16
 ## Project Structure
 
 ```
-├── data/               # MCMC sampler + PyTorch dataset
+├── data/               # MCMC samplers + PyTorch dataset
 ├── models/             # PaiNN, Transformer, Pairformer velocity networks
 ├── flow_matching/      # Shared interpolation, training loss, ODE sampling
-├── metrics/            # Clash rate computation
+├── metrics/            # Clash rate, bond violation, g(r) distance
 ├── experiments/        # Training, evaluation, scaling sweeps
 ├── viz/                # Publication-quality plotting
 ├── configs/            # Hydra configuration files
