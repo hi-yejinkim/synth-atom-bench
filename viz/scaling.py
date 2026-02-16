@@ -36,17 +36,19 @@ def plot_scaling_curves(
     ax: plt.Axes | None = None,
     fit_curves: bool = True,
     extrapolate_factor: float = 3.0,
+    ylabel: str = "Clash rate",
 ) -> plt.Figure:
-    """Plot scaling curves: clash rate vs. total training FLOPs.
+    """Plot scaling curves: metric vs. total training FLOPs.
 
     Args:
         results: dict mapping architecture name to a dict with keys:
             "flops": array of total training FLOPs,
-            "clash_rate": array of mean clash rates,
+            "clash_rate": array of metric values,
             "clash_rate_std": (optional) array of standard deviations.
         ax: optional existing axes.
         fit_curves: whether to fit and plot power law curves.
         extrapolate_factor: how far beyond data to extend fitted curves.
+        ylabel: label for the y-axis.
 
     Returns:
         The matplotlib Figure.
@@ -95,7 +97,7 @@ def plot_scaling_curves(
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Total training FLOPs")
-    ax.set_ylabel("Clash rate")
+    ax.set_ylabel(ylabel)
     ax.set_title("Compute Scaling")
     ax.legend(frameon=False)
 

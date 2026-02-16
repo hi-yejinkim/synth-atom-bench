@@ -127,6 +127,7 @@ def summarize_sweep(args):
             model_kwargs = config.get("model", {}).get("model_kwargs", {})
             lr = config.get("train", {}).get("lr", 0)
             cr = data.get("best_clash_rate", float("inf"))
+            grd = data.get("best_gr_distance", float("inf"))
             step = data.get("step", 0)
 
             # Estimate param count from model_kwargs
@@ -135,6 +136,7 @@ def summarize_sweep(args):
                 "arch": arch,
                 "lr": lr,
                 "best_clash_rate": cr,
+                "best_gr_distance": grd,
                 "step": step,
                 "model_kwargs": model_kwargs,
             })
@@ -146,20 +148,22 @@ def summarize_sweep(args):
         sys.exit(1)
 
     # Print summary table
-    results.sort(key=lambda r: (r["arch"], r["best_clash_rate"]))
-    print(f"\n{'Run':<35} {'Arch':<12} {'LR':<10} {'Clash Rate':<12} {'Step':<8}")
-    print("-" * 80)
+    results.sort(key=lambda r: (r["arch"], r["best_gr_distance"]))
+    print(f"\n{'Run':<35} {'Arch':<12} {'LR':<10} {'CR':<10} {'g(r) dist':<12} {'Step':<8}")
+    print("-" * 90)
     for r in results:
-        print(f"{r['run']:<35} {r['arch']:<12} {r['lr']:<10.1e} {r['best_clash_rate']:<12.4f} {r['step']:<8}")
+        grd_str = f"{r['best_gr_distance']:.4f}" if r["best_gr_distance"] < float("inf") else "n/a"
+        print(f"{r['run']:<35} {r['arch']:<12} {r['lr']:<10.1e} {r['best_clash_rate']:<10.4f} {grd_str:<12} {r['step']:<8}")
 
-    # Best per architecture
+    # Best per architecture (by g(r) distance)
     print(f"\nBest per architecture:")
-    print("-" * 50)
+    print("-" * 60)
     seen = set()
     for r in results:
         if r["arch"] not in seen:
             seen.add(r["arch"])
-            print(f"  {r['arch']:<12} clash_rate={r['best_clash_rate']:.4f} (lr={r['lr']:.1e})")
+            grd_str = f"g(r)={r['best_gr_distance']:.4f}" if r["best_gr_distance"] < float("inf") else "g(r)=n/a"
+            print(f"  {r['arch']:<12} cr={r['best_clash_rate']:.4f} {grd_str} (lr={r['lr']:.1e})")
 
     # Save summary JSON
     summary_path = os.path.join(sweep_dir, "summary.json")

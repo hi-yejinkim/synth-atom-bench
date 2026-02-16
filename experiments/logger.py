@@ -88,7 +88,7 @@ class Logger:
             init_kwargs["config"] = model_config
         wandb.init(**init_kwargs)
         self._scaling_table = wandb.Table(
-            columns=["architecture", "compute_budget", "best_clash_rate", "param_count", "flops_per_step"]
+            columns=["architecture", "compute_budget", "best_clash_rate", "best_gr_distance", "param_count", "flops_per_step"]
         )
 
     def log_train(self, metrics: dict, step: int) -> None:
@@ -171,13 +171,14 @@ class Logger:
         architecture: str,
         compute_budget: float,
         best_clash_rate: float,
+        best_gr_distance: float = float("inf"),
         param_count: int | None = None,
         flops_per_step: float | None = None,
     ) -> None:
         if self._wandb is None or self._scaling_table is None:
             return
         self._scaling_table.add_data(
-            architecture, compute_budget, best_clash_rate, param_count, flops_per_step
+            architecture, compute_budget, best_clash_rate, best_gr_distance, param_count, flops_per_step
         )
         self._wandb.log({"scaling/results": self._scaling_table})
 

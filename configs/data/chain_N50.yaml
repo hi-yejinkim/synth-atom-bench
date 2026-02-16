@@ -1,0 +1,4 @@
+data_dir: outputs/data/chain_N50
+n_atoms: 50
+bond_length: 1.0
+radius: 0.3
