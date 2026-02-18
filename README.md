@@ -28,11 +28,36 @@ Sample self-avoiding polymer chains: atoms connected by fixed-length bonds that 
 
 ## Key Result: Compute Scaling Laws
 
-For each architecture, we sweep model size and training steps under a fixed compute budget, then fit a power law: `clash_rate(C) = a × C^(-α) + floor`. The scaling exponent **α** tells you how fast performance improves with compute.
+For each architecture, we sweep model size and training steps under a fixed compute budget (5 budgets from 10^15 to 3×10^17 FLOPs), then fit a power law: `metric(C) = a × C^(-α) + floor`. The scaling exponent **α** tells you how fast performance improves with compute — higher is better.
+
+### Hard Sphere Packing
 
 <p align="center">
-  <img src="docs/assets/scaling_curves.png" width="65%" alt="Compute scaling curves">
+  <img src="docs/assets/scaling_curves.png" width="65%" alt="Hard sphere compute scaling curves">
 </p>
+
+| | PaiNN | Transformer | Pairformer |
+|---|:---:|:---:|:---:|
+| **α** (clash rate) | **1.21** | 0.39 | 0.51 |
+
+PaiNN scales fastest on hard spheres, reaching 0% clash rate at just 2×10^16 FLOPs. Its equivariant message passing is the right inductive bias for learning pairwise distance constraints.
+
+### Self-Avoiding Chains
+
+<p align="center">
+  <img src="docs/assets/chain_scaling_gr_distance.png" width="65%" alt="Chain g(r) distance compute scaling curves">
+</p>
+
+| | PaiNN | Transformer | Pairformer |
+|---|:---:|:---:|:---:|
+| **α** (g(r) distance) | 0.15 | 0.38 | **0.89** |
+| **α** (clash rate) | 0.19 | 0.24 | **0.90** |
+
+On chains, Pairformer dominates — its pair representation and triangular updates give it a 2-4x scaling advantage over the other architectures. At the highest budget, Pairformer achieves 0% clash rate and the lowest g(r) distance (0.025). Bond violation remains ~100% for all architectures, indicating that flow matching alone cannot learn discrete bond-length constraints.
+
+### Takeaway
+
+Architecture rankings flip between tasks. PaiNN's equivariance helps most on the pure distance-constraint problem (hard spheres), while Pairformer's richer pair representations dominate when structure has sequential topology (chains). This is exactly the kind of insight synthetic benchmarks are designed to reveal — **the "best" architecture depends on what geometric challenge dominates your problem.**
 
 ## Architectures
 

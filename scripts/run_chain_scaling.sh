@@ -1,11 +1,12 @@
 #!/bin/bash
 # Run the full scaling law experiment pipeline for chain datasets.
-# Usage: bash scripts/run_chain_scaling.sh [DATA_CONFIG] [SCALING_DIR]
-# Example: bash scripts/run_chain_scaling.sh chain_N10 outputs/scaling_chain
+# Usage: bash scripts/run_chain_scaling.sh [DATA_CONFIG] [SCALING_DIR] [N_GPUS]
+# Example: bash scripts/run_chain_scaling.sh chain_N10 outputs/scaling_chain 8
 set -euo pipefail
 
 DATA_CONFIG="${1:-chain_N10}"
 SCALING_DIR="${2:-outputs/scaling_chain}"
+N_GPUS="${3:-1}"
 
 # Infer N from config name (chain_N10 -> 10, chain_N20 -> 20, etc.)
 N=$(echo "$DATA_CONFIG" | grep -oP 'N\K[0-9]+')
@@ -38,6 +39,7 @@ echo "Running scaling experiments..."
 uv run python experiments/scaling.py run \
     --scaling_dir "$SCALING_DIR" \
     --data "$DATA_CONFIG" \
+    --n_gpus "$N_GPUS" \
     --wandb
 
 # Step 3: Collect results

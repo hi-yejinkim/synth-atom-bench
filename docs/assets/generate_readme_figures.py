@@ -90,30 +90,28 @@ def hero_structures():
     print("  hero_structures")
 
 
-def scaling_curves():
-    """Scaling curves from real experiment results."""
-    results_path = _project_root / "outputs" / "scaling" / "results.json"
-    if not results_path.exists():
-        print("  scaling_curves: SKIPPED (no results.json)")
-        return
+def _load_scaling_results(results_path, metric_key="best_clash_rate"):
+    """Load scaling results and group by architecture.
 
+    Returns dict mapping display name -> {"flops": array, "clash_rate": array},
+    filtered to entries with total_flops > 0.
+    """
     with open(results_path) as f:
         raw = json.load(f)
 
     best = raw["best_per_budget"]
-
-    # Group by architecture
     arch_name_map = {"painn": "PaiNN", "transformer": "Transformer", "pairformer": "Pairformer"}
     arch_data = {}
     for entry in best.values():
+        if entry["total_flops"] <= 0:
+            continue
         arch = entry["arch"]
         display_name = arch_name_map.get(arch, arch)
         if display_name not in arch_data:
             arch_data[display_name] = {"flops": [], "clash_rate": []}
         arch_data[display_name]["flops"].append(entry["total_flops"])
-        arch_data[display_name]["clash_rate"].append(entry["best_clash_rate"])
+        arch_data[display_name]["clash_rate"].append(entry[metric_key])
 
-    # Sort by flops and convert to arrays
     results = {}
     for name, data in arch_data.items():
         order = np.argsort(data["flops"])
@@ -121,6 +119,17 @@ def scaling_curves():
             "flops": np.array(data["flops"])[order],
             "clash_rate": np.array(data["clash_rate"])[order],
         }
+    return results
+
+
+def scaling_curves():
+    """Scaling curves from hard sphere experiment results."""
+    results_path = _project_root / "outputs" / "scaling" / "results.json"
+    if not results_path.exists():
+        print("  scaling_curves: SKIPPED (no results.json)")
+        return
+
+    results = _load_scaling_results(results_path)
 
     with synthbench_style():
         fig = plot_scaling_curves(results, fit_curves=True)
@@ -128,10 +137,33 @@ def scaling_curves():
     print("  scaling_curves")
 
 
+def chain_scaling_curves():
+    """Scaling curves from chain experiment results (g(r) distance + clash rate)."""
+    results_path = _project_root / "outputs" / "scaling_chain" / "results.json"
+    if not results_path.exists():
+        print("  chain_scaling_curves: SKIPPED (no results.json)")
+        return
+
+    # g(r) distance
+    gr_results = _load_scaling_results(results_path, metric_key="best_gr_distance")
+    with synthbench_style():
+        fig = plot_scaling_curves(gr_results, fit_curves=True, ylabel="g(r) L1 distance")
+        save_figure(fig, OUT_DIR / "chain_scaling_gr_distance")
+    print("  chain_scaling_gr_distance")
+
+    # Clash rate
+    cr_results = _load_scaling_results(results_path, metric_key="best_clash_rate")
+    with synthbench_style():
+        fig = plot_scaling_curves(cr_results, fit_curves=True)
+        save_figure(fig, OUT_DIR / "chain_scaling_clash_rate")
+    print("  chain_scaling_clash_rate")
+
+
 def main():
     print("Generating README figures...")
     hero_structures()
     scaling_curves()
+    chain_scaling_curves()
     print(f"Done. Outputs in {OUT_DIR}")
 
 
