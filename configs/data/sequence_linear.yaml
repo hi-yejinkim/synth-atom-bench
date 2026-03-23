@@ -1,0 +1,10 @@
+data_dir: outputs/data/sequence_linear
+n_atoms: 20
+n_fragments: 5
+fragment_size: 4
+contact_fraction: 0.1
+contact_distance: 5.0
+polymer_type: linear
+bond_length: 1.0
+radius: 0.3
+task: sequence

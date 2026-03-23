@@ -11,9 +11,12 @@ class HardSphereDataset(Dataset):
     Loads entire dataset into memory as float32 tensors at init time.
     """
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, max_samples: int | None = None):
         data = np.load(path)
-        self.positions = torch.from_numpy(data["positions"].astype(np.float32))
+        positions = data["positions"].astype(np.float32)
+        if max_samples is not None:
+            positions = positions[:max_samples]
+        self.positions = torch.from_numpy(positions)
         self.radius = float(data["radius"])
         self.box_size = float(data["box_size"])
 

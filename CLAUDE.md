@@ -1,5 +1,54 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Common Commands
+
+```bash
+# Package management (always uv, never pip)
+uv sync                          # Install/sync dependencies
+uv add <package>                 # Add a dependency
+uv run <script>                  # Run any script
+
+# Tests
+uv run pytest tests/             # Run all tests
+uv run pytest tests/test_models.py             # Single test file
+uv run pytest tests/test_models.py::test_painn # Single test function
+
+# Training (Hydra config — override via CLI args)
+uv run experiments/train.py model=painn data=medium_small training.max_steps=50000
+uv run experiments/train.py model=transformer data=chain_N20 model.num_layers=6
+
+# Data generation
+uv run data/generate.py --N 10 --eta 0.3 --radius 0.5 --num_samples 50000 --output outputs/data/N10_eta0.3/train.npz
+uv run data/generate_chains.py --N 20 --num_samples 50000 --output outputs/data/chain_N20/train.npz
+uv run data/generate_unified.py --rules 1,2,3 --N_backbone 10 --n_samples 50000 --output outputs/data/unified_R123_sp3_N10/train.npz
+
+# Chinchilla scaling experiments (subcommand workflow: generate → run → collect → fit → plot)
+uv run experiments/chinchilla.py generate --tasks sphere_easy --archs painn,transformer,pairformer
+uv run experiments/chinchilla.py run --tasks sphere_easy --n_gpus 4
+uv run experiments/chinchilla.py collect --tasks sphere_easy
+uv run experiments/chinchilla.py fit --tasks sphere_easy
+uv run experiments/chinchilla.py plot --tasks sphere_easy
+
+# Evaluation
+uv run experiments/evaluate.py --checkpoint outputs/checkpoints/painn/best.pt --arch painn --num_samples 10000
+```
+
+## High-Level Architecture
+
+**Core idea**: Three velocity network architectures (PaiNN, Transformer, Pairformer) share the same conditional flow matching framework (`flow_matching/`). The only variable is the architecture — same data, same sampler, same augmentation, same evaluation.
+
+**Task system**: Tasks are registered in `experiments/task_registry.py` with complexity levels 1-7. The unified 6-rule system (`data/generate_unified.py`) provides progressive difficulty via independently toggleable rules. Each task type has its own generator (`data/generate*.py`), dataset class (`data/dataset.py`), and metrics module (`metrics/`).
+
+**Scaling orchestration**: `experiments/chinchilla.py` runs Chinchilla-style scaling law measurements with Approach 1 (IsoFLOP envelope) and Approach 3 (parametric fit L(N,D) = E + A/N^α + B/D^β). Model size presets (chinchilla_0-13, spanning 1K-100M params) are defined in `experiments/model_registry.py`.
+
+**Config**: Hydra-based (`configs/`). Data configs in `configs/data/` (20+ task definitions), model configs in `configs/model/`, training config in `configs/train.yaml`.
+
+**Visualization**: All plots use `synthbench_style()` context manager from `viz/style.py`.
+
+---
+
 ## Project: SynthBench3D — Hard Sphere Packing Benchmark
 
 ### Big Picture

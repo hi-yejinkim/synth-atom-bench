@@ -104,6 +104,67 @@ def plot_scaling_curves(
     return fig
 
 
+def plot_data_scaling_curves(
+    results: dict,
+    ax: plt.Axes | None = None,
+    fit_curves: bool = True,
+    extrapolate_factor: float = 3.0,
+    ylabel: str = "Clash rate",
+) -> plt.Figure:
+    """Plot data scaling curves: metric vs. training set size (N_data).
+
+    Args:
+        results: dict mapping architecture name to a dict with keys:
+            "n_train": array of training set sizes,
+            "clash_rate": array of metric values.
+        ax: optional existing axes.
+        fit_curves: whether to fit and plot power law curves.
+        extrapolate_factor: how far beyond data to extend fitted curves.
+        ylabel: label for the y-axis.
+
+    Returns:
+        The matplotlib Figure.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=DOUBLE_COL)
+    else:
+        fig = ax.get_figure()
+
+    for arch, data in results.items():
+        color = ARCH_COLORS.get(arch, "gray")
+        marker = ARCH_MARKERS.get(arch, "x")
+        n = np.asarray(data["n_train"], dtype=float)
+        cr = np.asarray(data["clash_rate"], dtype=float)
+
+        label = arch
+        ax.plot(n, cr, marker=marker, color=color, linewidth=1.5,
+                markersize=7, label=label, zorder=3)
+
+        if fit_curves and len(n) >= 3:
+            try:
+                a, beta, floor = fit_scaling_law(n, cr)
+                n_min, n_max = n.min(), n.max()
+                n_ext = np.geomspace(n_min / 2, n_max * extrapolate_factor, 200)
+                cr_fit = _power_law(n_ext, a, beta, floor)
+                ax.plot(n_ext, cr_fit, color=color, linestyle="--", linewidth=1.0,
+                        alpha=0.7)
+                ax.lines[-2].set_label(f"{arch} (\u03b2={beta:.2f})")
+            except RuntimeError:
+                pass
+
+    ax.axhline(0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5,
+               label="perfect")
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("Training set size (N)")
+    ax.set_ylabel(ylabel)
+    ax.set_title("Data Scaling")
+    ax.legend(frameon=False)
+
+    return fig
+
+
 def plot_capability_heatmap(
     data: np.ndarray,
     ax: plt.Axes | None = None,

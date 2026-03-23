@@ -12,6 +12,7 @@ def sample(
     n_samples: int,
     n_steps: int = 100,
     device: str = "cpu",
+    atom_type_ids: Tensor | None = None,
 ) -> Tensor:
     """Generate samples via Euler ODE integration.
 
@@ -23,6 +24,7 @@ def sample(
         n_samples: Number of samples to generate.
         n_steps: Number of Euler steps.
         device: Device for generation.
+        atom_type_ids: Per-atom type ids (N,) int64, optional conditioning.
 
     Returns:
         Generated positions, shape (n_samples, n_atoms, 3).
@@ -33,7 +35,7 @@ def sample(
 
     for i in range(n_steps):
         t = torch.full((n_samples,), i * dt, device=device)
-        v = model(x, t)
+        v = model(x, t, atom_type_ids=atom_type_ids)
         x = x + v * dt
 
     return x
@@ -47,6 +49,7 @@ def sample_batched(
     n_steps: int = 100,
     batch_size: int = 256,
     device: str = "cpu",
+    atom_type_ids: Tensor | None = None,
 ) -> Tensor:
     """Generate samples in chunks to avoid OOM.
 
@@ -57,15 +60,23 @@ def sample_batched(
         n_steps: Number of Euler steps.
         batch_size: Samples per chunk.
         device: Device for generation.
+        atom_type_ids: Per-atom type ids (N,) int64, optional conditioning.
 
     Returns:
         Generated positions, shape (n_samples, n_atoms, 3).
     """
     chunks = []
     remaining = n_samples
+    current_batch_size = batch_size
     while remaining > 0:
-        chunk_size = min(batch_size, remaining)
-        chunk = sample(model, n_atoms, chunk_size, n_steps, device)
-        chunks.append(chunk.cpu())
-        remaining -= chunk_size
+        chunk_size = min(current_batch_size, remaining)
+        try:
+            chunk = sample(model, n_atoms, chunk_size, n_steps, device,
+                           atom_type_ids=atom_type_ids)
+            chunks.append(chunk.cpu())
+            remaining -= chunk_size
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            current_batch_size = max(1, current_batch_size // 2)
+            continue
     return torch.cat(chunks, dim=0)

@@ -174,6 +174,7 @@ class TransformerVelocityNetwork(nn.Module):
         num_rbf: int = 64,
         cutoff: float = 10.0,
         mlp_ratio: float = 4.0,
+        num_atom_types: int = 4,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -181,6 +182,9 @@ class TransformerVelocityNetwork(nn.Module):
 
         # Input: 3D coordinates → hidden_dim
         self.input_proj = nn.Linear(3, hidden_dim)
+
+        # Per-atom type embedding (sp3=0, sp2=1, sp=2, sidechain=3)
+        self.atom_type_embed = nn.Embedding(num_atom_types, hidden_dim)
 
         # Pairwise distance bias: distances → RBF → per-head bias
         self.rbf = GaussianRBF(num_rbf, cutoff)
@@ -218,18 +222,21 @@ class TransformerVelocityNetwork(nn.Module):
         bias = self.pair_proj(rbf_feats)  # (batch, N, N, num_heads)
         return bias.permute(0, 3, 1, 2)  # (batch, num_heads, N, N)
 
-    def forward(self, positions: Tensor, t: Tensor) -> Tensor:
+    def forward(self, positions: Tensor, t: Tensor, atom_type_ids: Tensor | None = None) -> Tensor:
         """Predict velocity field.
 
         Args:
             positions: Atom positions (batch, N, 3).
             t: Timestep (batch,).
+            atom_type_ids: Per-atom type ids (N,) int64, optional.
 
         Returns:
             Predicted velocity (batch, N, 3).
         """
         pair_bias = self._compute_pair_bias(positions)
         x = self.input_proj(positions)
+        if atom_type_ids is not None:
+            x = x + self.atom_type_embed(atom_type_ids).unsqueeze(0)
         c = self.time_proj(self.time_embed(t))
 
         for block in self.blocks:

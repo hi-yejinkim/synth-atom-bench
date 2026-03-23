@@ -1,0 +1,9 @@
+data_dir: outputs/data/vsepr_sp3
+n_atoms: 5
+orbital_type: sp3
+n_lonepairs: 0
+has_pi: false
+bond_range: [1.4, 1.6]
+target_angle: 109.5
+radius: 0.5
+task: vsepr

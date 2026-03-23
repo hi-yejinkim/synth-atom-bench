@@ -1,0 +1,9 @@
+# Unified 6-rule task: Rule 5 only (global pairs, no local VSEPR)
+data_dir: outputs/data/unified_R5_sp3_N10
+n_atoms: 10
+N_backbone: 10
+orbital_type: sp3
+radius: 0.4
+box_size: 20.0
+unified_structure: true
+rules_str: R5

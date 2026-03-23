@@ -1,0 +1,6 @@
+data_dir: outputs/data/vsepr_chain_sp3_N50
+n_atoms: 50
+orbital_type: sp3
+bond_length: 1.5
+radius: 0.40
+target_angle: 109.5

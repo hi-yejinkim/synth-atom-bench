@@ -60,21 +60,26 @@ def plot_structure(
     title: str | None = None,
     bonds: list[tuple[int, int]] | None = None,
     draw_box: bool = True,
+    display_radius: float | None = None,
 ) -> plt.Figure:
     """Plot a single 3D atom configuration.
 
     Args:
         positions: (N, 3) atom positions.
-        radius: atom radius.
+        radius: atom radius used for clash detection.
         box_size: cubic box side length. If None, auto-computed from positions.
         ax: optional existing 3D axes.
         title: optional subplot title.
         bonds: optional list of (i, j) index pairs to draw as bonds.
         draw_box: whether to draw the wireframe box.
+        display_radius: sphere size for rendering. Defaults to radius.
+            Set larger than radius to make spheres more visible.
 
     Returns:
         The matplotlib Figure.
     """
+    if display_radius is None:
+        display_radius = radius
     if ax is None:
         fig = plt.figure(figsize=(5, 5))
         ax = fig.add_subplot(111, projection="3d")
@@ -105,9 +110,9 @@ def plot_structure(
 
     for i, pos in enumerate(positions):
         if clashing[i]:
-            _draw_sphere(ax, pos, radius, color_clash, alpha=0.5, edge_alpha=1.0)
+            _draw_sphere(ax, pos, display_radius, color_clash, alpha=0.6, edge_alpha=1.0)
         else:
-            _draw_sphere(ax, pos, radius, color_ok, alpha=0.4, edge_alpha=0.8)
+            _draw_sphere(ax, pos, display_radius, color_ok, alpha=0.5, edge_alpha=0.9)
 
     ax.view_init(elev=20, azim=45)
     ax.set_box_aspect([1, 1, 1])

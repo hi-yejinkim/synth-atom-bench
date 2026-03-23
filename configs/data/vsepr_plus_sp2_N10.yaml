@@ -1,0 +1,12 @@
+data_dir: outputs/data/vsepr_plus_sp2_N10
+n_atoms: 20            # N_total
+N_backbone: 10
+orbital_type: sp2
+n_lonepairs: 0
+has_pi: true
+n_sidechain_per_atom: 1
+contact_fraction: 0.0
+contact_distance: 5.0
+radius: 0.4
+task: vsepr_plus
+vsepr_plus: true       # flag for infer_task_id

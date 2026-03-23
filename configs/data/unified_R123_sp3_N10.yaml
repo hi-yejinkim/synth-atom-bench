@@ -1,0 +1,9 @@
+# Unified 6-rule task: Rules 1,2,3 (slots + angles + bond lengths)
+data_dir: outputs/data/unified_R123_sp3_N10
+n_atoms: 20            # N_total = B + sum(sidechain_counts)
+N_backbone: 10
+orbital_type: sp3
+radius: 0.4
+box_size: 20.0
+unified_structure: true
+rules_str: R123        # for task_id inference

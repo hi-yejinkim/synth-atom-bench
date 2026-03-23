@@ -7,11 +7,14 @@ defaults:
 train:
   max_steps: 100000
   budget: null  # if set, overrides max_steps = budget / flops_per_step
+  max_train_samples: null  # if set, subsample training data to this many samples
   batch_size: 256
   lr: 3e-4
   weight_decay: 1e-4
-  warmup_fraction: 0.05
+  warmup_fraction: 0.05   # set to 0 for pure Chinchilla cosine (no warmup)
+  min_lr_ratio: 0.1       # LR decays to min_lr_ratio * initial_lr at final step
   grad_clip_norm: 1.0
+  grad_accum_steps: 1    # gradient accumulation steps; effective_batch = batch_size * grad_accum_steps
   seed: 42
 
 eval:
@@ -26,6 +29,12 @@ checkpoint:
 
 augmentation:
   random_rotation: true
+
+chinchilla:
+  enabled: false
+  task_id: null       # e.g. sphere_easy, chain_N10, vsepr_sp3, sequence_linear
+  trajectory_path: null  # path to trajectory.jsonl output
+  size: null          # chinchilla size name (e.g. chinchilla_4)
 
 hydra:
   job:

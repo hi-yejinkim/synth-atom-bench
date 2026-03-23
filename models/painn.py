@@ -2,7 +2,12 @@
 
 Reference: Schütt et al., "Equivariant message passing for the prediction of
 tensorial properties and molecular spectra" (2021).
+
+Includes pre-LayerNorm and 1/sqrt(N_neighbors) message scaling for numerical
+stability at large hidden_dim / deep stacks (chinchilla_11+).
 """
+
+import math
 
 import torch
 import torch.nn as nn
@@ -57,6 +62,8 @@ class PaiNNInteraction(nn.Module):
 
     def __init__(self, hidden_dim: int, n_rbf: int):
         super().__init__()
+        # Pre-norm on scalar features
+        self.scalar_norm = nn.LayerNorm(hidden_dim)
         # Context net on neighbor scalar features -> 3H for (ds, dvs, dvv)
         self.context_net = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
@@ -79,6 +86,7 @@ class PaiNNInteraction(nn.Module):
         rbf: Tensor,
         f_cut: Tensor,
         dir_ij: Tensor,
+        inv_sqrt_neighbors: float,
     ) -> tuple[Tensor, Tensor]:
         """Message passing update.
 
@@ -90,20 +98,24 @@ class PaiNNInteraction(nn.Module):
             rbf: Radial basis values (n_edges, n_rbf).
             f_cut: Cutoff values (n_edges,).
             dir_ij: Unit direction vectors (n_edges, 3).
+            inv_sqrt_neighbors: 1/sqrt(avg_neighbors) scaling factor.
 
         Returns:
             Updated (s, v).
         """
         H = s.shape[-1]
 
+        # Pre-norm scalar features
+        s_normed = self.scalar_norm(s)
+
         # Context from neighbor scalar features
-        context = self.context_net(s[idx_j])  # (n_edges, 3H)
+        context = self.context_net(s_normed[idx_j])  # (n_edges, 3H)
 
         # Filter from radial basis, modulated by cutoff
         W = self.filter_net(rbf) * f_cut[:, None]  # (n_edges, 3H)
 
-        # Element-wise product
-        msg = context * W  # (n_edges, 3H)
+        # Element-wise product, scaled by 1/sqrt(neighbors)
+        msg = context * W * inv_sqrt_neighbors  # (n_edges, 3H)
 
         # Split into scalar, vector-scalar, vector-vector contributions
         ds, dvs, dvv = msg[:, :H], msg[:, H:2*H], msg[:, 2*H:]
@@ -131,6 +143,8 @@ class PaiNNMixing(nn.Module):
 
     def __init__(self, hidden_dim: int):
         super().__init__()
+        # Pre-norm on scalar features
+        self.scalar_norm = nn.LayerNorm(hidden_dim)
         self.U = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.V = nn.Linear(hidden_dim, hidden_dim, bias=False)
         self.context_net = nn.Sequential(
@@ -159,8 +173,9 @@ class PaiNNMixing(nn.Module):
         # Norm of Vv: (n_atoms, H)
         Vv_norm = torch.sqrt(torch.sum(Vv ** 2, dim=1) + 1e-8)
 
-        # Context from concatenated [s, |Vv|]
-        ctx_input = torch.cat([s, Vv_norm], dim=-1)  # (n_atoms, 2H)
+        # Pre-norm scalar features, then concatenate with |Vv|
+        s_normed = self.scalar_norm(s)
+        ctx_input = torch.cat([s_normed, Vv_norm], dim=-1)  # (n_atoms, 2H)
         ctx = self.context_net(ctx_input)  # (n_atoms, 3H)
         a_ss, a_sv, a_vv = ctx[:, :H], ctx[:, H:2*H], ctx[:, 2*H:]
 
@@ -188,6 +203,7 @@ class PaiNNVelocityNetwork(nn.Module):
         n_layers: int = 5,
         n_rbf: int = 20,
         cutoff: float = 10.0,
+        num_atom_types: int = 4,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -199,7 +215,10 @@ class PaiNNVelocityNetwork(nn.Module):
         self.cosine_cutoff = CosineCutoff(cutoff)
 
         # Atom embedding: single learned embedding for identical atoms
-        self.atom_embedding = nn.Parameter(torch.randn(1, hidden_dim))
+        self.atom_embedding = nn.Parameter(torch.randn(1, hidden_dim) * (hidden_dim ** -0.5))
+
+        # Per-atom type embedding (sp3=0, sp2=1, sp=2, sidechain=3)
+        self.atom_type_embed = nn.Embedding(num_atom_types, hidden_dim)
 
         # Timestep embedding
         self.time_embed = SinusoidalTimestepEmbedding(hidden_dim)
@@ -212,6 +231,9 @@ class PaiNNVelocityNetwork(nn.Module):
         self.mixings = nn.ModuleList([
             PaiNNMixing(hidden_dim) for _ in range(n_layers)
         ])
+
+        # Final norm before readout
+        self.final_norm = nn.LayerNorm(hidden_dim)
 
         # Velocity readout from vector features: (n_atoms, 3, H) -> (n_atoms, 3)
         self.velocity_readout = nn.Linear(hidden_dim, 1, bias=False)
@@ -263,12 +285,13 @@ class PaiNNVelocityNetwork(nn.Module):
 
         return idx_i, idx_j, rbf, f_cut, dir_ij
 
-    def forward(self, positions: Tensor, t: Tensor) -> Tensor:
+    def forward(self, positions: Tensor, t: Tensor, atom_type_ids: Tensor | None = None) -> Tensor:
         """Predict velocity field.
 
         Args:
             positions: Atom positions (batch, N, 3).
             t: Timestep (batch,).
+            atom_type_ids: Per-atom type ids (N,) int64, optional.
 
         Returns:
             Predicted velocity (batch, N, 3).
@@ -278,8 +301,16 @@ class PaiNNVelocityNetwork(nn.Module):
         # Build graph
         idx_i, idx_j, rbf, f_cut, dir_ij = self._build_graph(positions)
 
+        # Message scaling: 1/sqrt(N-1) where N-1 is the number of neighbors
+        inv_sqrt_neighbors = 1.0 / math.sqrt(max(N - 1, 1))
+
         # Initialize scalar features: learned embedding + timestep
         s = self.atom_embedding.expand(batch_size * N, -1).clone()  # (batch*N, H)
+        if atom_type_ids is not None:
+            # atom_type_ids: (N,) → expand to (batch*N, H)
+            type_emb = self.atom_type_embed(atom_type_ids)  # (N, H)
+            type_emb = type_emb.unsqueeze(0).expand(batch_size, -1, -1).reshape(batch_size * N, -1)
+            s = s + type_emb
         t_emb = self.time_proj(self.time_embed(t))  # (batch, H)
         # Repeat timestep embedding for each atom in the sample
         t_emb = t_emb[:, None, :].expand(-1, N, -1).reshape(batch_size * N, -1)
@@ -290,8 +321,11 @@ class PaiNNVelocityNetwork(nn.Module):
 
         # Message passing
         for interaction, mixing in zip(self.interactions, self.mixings):
-            s, v = interaction(s, v, idx_i, idx_j, rbf, f_cut, dir_ij)
+            s, v = interaction(s, v, idx_i, idx_j, rbf, f_cut, dir_ij, inv_sqrt_neighbors)
             s, v = mixing(s, v)
+
+        # Final norm on scalar (for symmetry with pre-norms; stabilises readout)
+        s = self.final_norm(s)
 
         # Velocity readout: (batch*N, 3, H) -> (batch*N, 3, 1) -> (batch*N, 3)
         velocity = self.velocity_readout(v).squeeze(-1)

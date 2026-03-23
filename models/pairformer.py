@@ -215,12 +215,16 @@ class PairformerVelocityNetwork(nn.Module):
         num_rbf: int = 64,
         cutoff: float = 10.0,
         expansion_factor: float = 4.0,
+        num_atom_types: int = 4,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
 
         # Input projection: 3D coords -> single repr
         self.input_proj = nn.Linear(3, hidden_dim)
+
+        # Per-atom type embedding (sp3=0, sp2=1, sp=2, sidechain=3)
+        self.atom_type_embed = nn.Embedding(num_atom_types, hidden_dim)
 
         # Pair repr from pairwise distances: distances -> RBF -> pair_dim
         self.rbf = GaussianRBF(num_rbf, cutoff)
@@ -248,18 +252,21 @@ class PairformerVelocityNetwork(nn.Module):
         nn.init.constant_(self.out_proj.weight, 0)
         nn.init.constant_(self.out_proj.bias, 0)
 
-    def forward(self, positions: Tensor, t: Tensor) -> Tensor:
+    def forward(self, positions: Tensor, t: Tensor, atom_type_ids: Tensor | None = None) -> Tensor:
         """Predict velocity field.
 
         Args:
             positions: Atom positions (batch, N, 3).
             t: Timestep (batch,).
+            atom_type_ids: Per-atom type ids (N,) int64, optional.
 
         Returns:
             Predicted velocity (batch, N, 3).
         """
         # Single repr: input projection + timestep
         s = self.input_proj(positions)  # (B, N, hidden_dim)
+        if atom_type_ids is not None:
+            s = s + self.atom_type_embed(atom_type_ids).unsqueeze(0)
         t_emb = self.time_proj(self.time_embed(t))  # (B, hidden_dim)
         s = s + t_emb.unsqueeze(1)
 

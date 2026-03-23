@@ -1,7 +1,72 @@
+# Outputs (data, checkpoints, plots, logs)
 outputs/
 wandb/
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 *.egg-info/
 dist/
+build/
+*.egg
+
+# Virtual environment
 .venv/
+.env/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Hydra outputs (generated in working dir)
+multirun/
+
+# PDF duplicates of PNG figures
+docs/assets/*.pdf
+
+# ── Not used by Chinchilla pipeline ──────────────────────────
+
+# Standalone data generation scripts (run before pipeline, not imported)
+data/generate.py
+data/generate_unified.py
+data/generate_vsepr_chain.py
+data/generate_vsepr_plus.py
+data/validate_chains.py
+data/vsepr_plus_dataset.py
+
+# Alternative experiment frameworks (not part of Chinchilla)
+experiments/scaling.py
+experiments/sweep_hparams.py
+configs/sweep.yaml
+
+# Unused task configs
+configs/data/sequence_branched.yaml
+configs/data/sequence_crosslinked.yaml
+configs/data/vsepr_sp2.yaml
+configs/data/vsepr_sp3_lp1.yaml
+
+# Visualization examples (standalone demos)
+viz/examples/
+
+# Shell scripts (manual utilities)
+scripts/
+
+# Documentation & figures (keep README only)
+docs/
