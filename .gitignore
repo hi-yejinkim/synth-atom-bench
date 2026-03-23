@@ -39,7 +39,6 @@ Thumbs.db
 multirun/
 
 # PDF duplicates of PNG figures
-docs/assets/*.pdf
 
 # ── Not used by Chinchilla pipeline ──────────────────────────
 
