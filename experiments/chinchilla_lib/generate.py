@@ -24,10 +24,15 @@ def generate(args: argparse.Namespace) -> None:
     lrs   = [float(lr) for lr in args.lrs.split(",")]
     chinchilla_dir = args.chinchilla_dir
 
+    from experiments.task_registry import _register_nbody_task
+
     for task_id in tasks:
         if task_id not in TASK_REGISTRY:
-            print(f"[WARN] Unknown task '{task_id}', skipping", file=sys.stderr)
-            continue
+            if task_id.startswith("nbody_"):
+                _register_nbody_task(task_id)
+            else:
+                print(f"[WARN] Unknown task '{task_id}', skipping", file=sys.stderr)
+                continue
         spec = TASK_REGISTRY[task_id]
         n_atoms = spec.n_atoms
         grid_meta: dict[str, dict] = {}

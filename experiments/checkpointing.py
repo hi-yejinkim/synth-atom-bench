@@ -119,6 +119,7 @@ class CheckpointManager:
         gr_distance: float = float("inf"),
         bond_violation_rate: float = float("inf"),
         nonbonded_clash_rate: float = float("inf"),
+        **kwargs,
     ) -> None:
         best_cr = min(clash_rate, self._best_clash_rate)
         best_grd = min(gr_distance, self._best_gr_distance)

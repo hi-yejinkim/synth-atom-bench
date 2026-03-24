@@ -1,0 +1,5 @@
+data_dir: outputs/data/nbody_n15_b2_T0.8
+n_atoms: 15
+nbody: true
+body: 2
+T: 0.8

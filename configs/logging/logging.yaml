@@ -1,6 +1,6 @@
 project: synthbench3d
 entity: null
-enabled: true
+enabled: false
 log_every_n_steps: 100
 eval_every_n_epochs: 1
 checkpoint_every_n_epochs: 5

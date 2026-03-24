@@ -19,7 +19,7 @@ from experiments.chinchilla_lib.helpers import (
 
 def run(args: argparse.Namespace) -> None:
     """Execute training commands from generate, with optional GPU parallelism."""
-    from experiments.task_registry import TASK_REGISTRY
+    from experiments.task_registry import TASK_REGISTRY, _register_nbody_task
 
     tasks = [t.strip() for t in args.tasks.split(",")]
     archs = [a.strip() for a in args.archs.split(",")]
@@ -32,7 +32,10 @@ def run(args: argparse.Namespace) -> None:
     commands: list[tuple[str, str]] = []  # (cmd, traj_path)
     for task_id in tasks:
         if task_id not in TASK_REGISTRY:
-            continue
+            if task_id.startswith("nbody_"):
+                _register_nbody_task(task_id)
+            else:
+                continue
         spec = TASK_REGISTRY[task_id]
         meta_path = _grid_meta_path(chinchilla_dir, task_id)
         if not os.path.exists(meta_path):

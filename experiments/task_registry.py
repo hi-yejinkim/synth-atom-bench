@@ -239,6 +239,32 @@ TASK_REGISTRY: dict[str, TaskSpec] = {
     ),
 }
 
+
+def _register_nbody_task(task_id: str) -> TaskSpec:
+    """Dynamically create TaskSpec from nbody task_id pattern.
+
+    Supported patterns:
+        nbody_n{N}_b{body}_T{T}         (PBC, legacy)
+        nbody_n{N}_b{body}_hw_T{T}      (hard wall)
+    """
+    import re
+    m = re.match(r"nbody_n(\d+)_b(\d+)_(hw_)?T([\d.]+)", task_id)
+    if not m:
+        raise KeyError(f"Cannot parse nbody task_id: {task_id}")
+    n, body = int(m.group(1)), int(m.group(2))
+    hw = m.group(3) is not None
+    T = float(m.group(4))
+    bc_label = " hard_wall" if hw else ""
+    spec = TaskSpec(
+        task_id=task_id,
+        data_config=task_id,  # configs/data/{task_id}.yaml
+        n_atoms=n,
+        complexity=max(1, int(5 - T)),  # lower T = harder
+        description=f"N-body N={n} {body}-body{bc_label} T={T}",
+    )
+    TASK_REGISTRY[task_id] = spec
+    return spec
+
 # Ordered by complexity for iteration
 TASKS_BY_COMPLEXITY: list[TaskSpec] = sorted(
     TASK_REGISTRY.values(), key=lambda t: t.complexity
@@ -270,9 +296,12 @@ def get_violation_rate(eval_result: dict, task_id: str) -> float:
         KeyError: if a required metric key is missing from eval_result.
     """
     if task_id not in TASK_REGISTRY:
-        raise KeyError(
-            f"Unknown task_id '{task_id}'. Available: {sorted(TASK_REGISTRY)}"
-        )
+        if task_id.startswith("nbody_"):
+            _register_nbody_task(task_id)
+        else:
+            raise KeyError(
+                f"Unknown task_id '{task_id}'. Available: {sorted(TASK_REGISTRY)}"
+            )
 
     if task_id.startswith("sphere_"):
         return float(eval_result["clash_rate"])
@@ -293,6 +322,13 @@ def get_violation_rate(eval_result: dict, task_id: str) -> float:
 
     if task_id.startswith("unified_"):
         return float(eval_result["violation_rate"])
+
+    if task_id.startswith("nbody_"):
+        # Normalize W1 by reference energy std to get a [0, ~1] scale
+        # W1 is more robust to outliers than W2 for scaling law fitting
+        w1 = float(eval_result.get("energy_w1", eval_result.get("energy_w2", float("inf"))))
+        ref_std = float(eval_result.get("ref_energy_std", 1.0))
+        return float(min(w1 / (ref_std + 1e-8), 1.0))
 
     # Fallback: should not be reached given the registry above
     raise KeyError(f"No violation_rate mapping for task_id '{task_id}'")
@@ -319,6 +355,19 @@ def infer_task_id(cfg) -> str:
         ValueError if the task cannot be inferred.
     """
     data = cfg.data
+
+    # N-body energy distribution tasks: has nbody flag
+    if hasattr(data, "nbody") and data.nbody:
+        n = int(getattr(data, "n_atoms", 15))
+        body = int(getattr(data, "body", 2))
+        T = float(getattr(data, "T", 1.0))
+        # Detect hard_wall from data_dir name (e.g. nbody_n20_b2_hw_T1.0)
+        data_dir = str(getattr(data, "data_dir", ""))
+        hw = "_hw_" in data_dir
+        task_id = f"nbody_n{n}_b{body}_{'hw_' if hw else ''}T{T}"
+        if task_id not in TASK_REGISTRY:
+            _register_nbody_task(task_id)
+        return task_id
 
     # Unified 6-rule tasks: has unified_structure flag
     if hasattr(data, "unified_structure") and data.unified_structure:

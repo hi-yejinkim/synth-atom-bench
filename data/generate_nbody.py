@@ -61,6 +61,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -502,14 +503,15 @@ def mcmc_sample(
     body: int,
     T: float,
     num_samples: int,
-    box_size: float = 10.0,
+    box_size: float | None = None,
     sigma: float = 1.0,
     epsilon: float = 1.0,
-    nu: float = 0.1,
-    mu: float = 0.01,
+    nu: float = 1.0,
+    mu: float = 0.2,
     burn_in: int | None = None,
     thin_interval: int | None = None,
-    step_size: float = 5.0,
+    step_size: float | None = None,
+
     seed: int = 42,
     bc: str = 'pbc',
 ) -> dict:
@@ -523,6 +525,15 @@ def mcmc_sample(
 
     Returns dict with positions, energies (total and per-body), and metadata.
     """
+    # Adaptive defaults: maintain η≈0.18 across different N
+    _N_REF, _BOX_REF, _STEP_REF = 15, 3.5, 0.5
+    if box_size is None:
+        box_size = _BOX_REF * (n / _N_REF) ** (1.0 / 3.0)
+    if step_size is None:
+        step_size = _STEP_REF * (box_size / _BOX_REF)
+        if bc == 'hard_wall':
+            step_size = min(step_size, box_size / 4.0)
+
     rng = np.random.default_rng(seed)
     params = PotentialParams(body=body, sigma=sigma, epsilon=epsilon,
                              nu=nu, mu=mu, box_size=box_size, bc=bc)
@@ -730,17 +741,18 @@ def main():
                         help="Boundary condition: 'pbc' (periodic) or 'hard_wall' (default: pbc)")
 
     # Potential parameters
-    parser.add_argument("--box_size", type=float, default=10.0,
-                        help="Cubic box side length (default: 10.0)")
+    parser.add_argument("--box_size", type=float, default=None,
+                        help="Cubic box side length. If not set, auto-computed "
+                             "from N to maintain η≈0.18 (packing fraction).")
     parser.add_argument("--sigma", type=float, default=1.0,
                         help="LJ length scale σ (default: 1.0)")
     parser.add_argument("--epsilon", type=float, default=1.0,
                         help="LJ energy scale ε (default: 1.0)")
-    parser.add_argument("--nu", type=float, default=0.1,
-                        help="Axilrod-Teller coupling for 3-body (default: 0.1). "
+    parser.add_argument("--nu", type=float, default=1.0,
+                        help="Axilrod-Teller coupling for 3-body (default: 1.0). "
                              "Should satisfy |V_3| << |V_2| for many-body hierarchy.")
-    parser.add_argument("--mu", type=float, default=0.01,
-                        help="Tetrahedron coupling for 4-body (default: 0.01). "
+    parser.add_argument("--mu", type=float, default=0.2,
+                        help="Tetrahedron coupling for 4-body (default: 0.2). "
                              "Should satisfy |V_4| << |V_3| for many-body hierarchy.")
 
     # MCMC parameters
@@ -750,12 +762,14 @@ def main():
                         help="Burn-in steps (default: adaptive based on n, T)")
     parser.add_argument("--thin_interval", type=int, default=None,
                         help="Thinning interval (default: max(n*10, 100))")
-    parser.add_argument("--step_size", type=float, default=0.3,
-                        help="Displacement step size in units of σ (default: 0.3). "
-                             "For hard_wall BC, consider step_size <= 1.0 to "
-                             "avoid high OOB rejection rates near walls.")
+    parser.add_argument("--step_size", type=float, default=None,
+                        help="Displacement step size in units of σ. If not set, "
+                             "auto-computed from N. For hard_wall BC, capped at "
+                             "box_size/4 to avoid high OOB rejection.")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed (default: 42)")
+    parser.add_argument("--cpu", type=int, default=None,
+                        help="Pin process to specific CPU core (0-indexed)")
 
     # Output
     parser.add_argument("--output", type=str, required=True,
@@ -764,6 +778,30 @@ def main():
                         help="Number of bins for energy histogram (default: 200)")
 
     args = parser.parse_args()
+
+    # Pin to CPU core if requested
+    if args.cpu is not None:
+        os.sched_setaffinity(0, {args.cpu})
+        print(f"[cpu] Pinned to core {args.cpu}")
+
+    # --- Adaptive parameter defaults based on N ---
+    # Calibrated at N=15: box_size=3.5 gives η≈0.18, step_size=0.5 gives acc≈36%
+    # Scale box_size ∝ N^(1/3) to maintain same packing fraction η
+    _N_REF, _BOX_REF, _STEP_REF = 15, 3.5, 0.5
+
+    if args.box_size is None:
+        args.box_size = _BOX_REF * (args.n / _N_REF) ** (1.0 / 3.0)
+        eta = args.n * (4.0 / 3.0) * np.pi * (args.sigma / 2.0) ** 3 / args.box_size ** 3
+        print(f"[auto] box_size={args.box_size:.3f} (η={eta:.3f})")
+
+    if args.step_size is None:
+        # Scale step_size with box_size ratio and sqrt(T) (Roberts et al. 1997)
+        # δ ∝ √T keeps ΔV/T ~ O(1), maintaining ~30% acceptance across temperatures
+        _T_REF = 1.0
+        args.step_size = _STEP_REF * (args.box_size / _BOX_REF) * (args.T / _T_REF) ** 0.5
+        if args.bc == 'hard_wall':
+            args.step_size = min(args.step_size, args.box_size / 4.0)
+        print(f"[auto] step_size={args.step_size:.3f}")
 
     # Compute actual burn-in/thin for display
     thin = args.thin_interval or max(args.n * 10, 100)

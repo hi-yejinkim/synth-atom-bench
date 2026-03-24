@@ -62,7 +62,33 @@ from experiments.chinchilla_lib.generate import generate
 from experiments.chinchilla_lib.run import run
 from experiments.chinchilla_lib.collect import collect
 from experiments.chinchilla_lib.fit import fit, fit_approach1
-from experiments.chinchilla_lib.plot import plot
+from experiments.chinchilla_lib.plot import plot, plot_T
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────
+
+def _expand_nbody_temps(args: argparse.Namespace) -> None:
+    """Expand --nbody_temps into concrete task IDs and merge into --tasks.
+
+    If --nbody_temps is given (e.g. "0.5,1.0,2.0") with --nbody_base
+    (e.g. "nbody_n15_b2"), generate task IDs like nbody_n15_b2_T0.5, etc.
+    These are appended to --tasks (or replace the default if --tasks was
+    not explicitly provided).
+    """
+    temps = getattr(args, "nbody_temps", None)
+    if not temps:
+        return
+    base = getattr(args, "nbody_base", "nbody_n15_b2")
+    t_values = [t.strip() for t in temps.split(",")]
+    nbody_tasks = [f"{base}_T{t}" for t in t_values]
+
+    existing = [t.strip() for t in args.tasks.split(",")]
+    # If tasks is still the default, replace; otherwise append
+    default_tasks = {"sphere_N50", "chain_N50"}
+    if set(existing) == default_tasks:
+        args.tasks = ",".join(nbody_tasks)
+    else:
+        args.tasks = ",".join(existing + nbody_tasks)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────
@@ -97,6 +123,22 @@ def _make_parser() -> argparse.ArgumentParser:
     shared.add_argument("--lrs",           default=",".join(str(lr) for lr in LRS))
     shared.add_argument("--chinchilla_dir", default="outputs/chinchilla")
     shared.add_argument("--wandb",         action="store_true")
+    shared.add_argument(
+        "--nbody_temps", default=None,
+        help=(
+            "Comma-separated temperature values for n-body T sweep. "
+            "Generates task IDs {nbody_base}_T{t} for each T. "
+            "Example: --nbody_temps 0.5,1.0,2.0"
+        ),
+    )
+    shared.add_argument(
+        "--nbody_base", default="nbody_n15_b2",
+        help=(
+            "Base name for n-body tasks (used with --nbody_temps). "
+            "Default: nbody_n15_b2. "
+            "Example: nbody_n20_b2_hw for hard-wall boundary."
+        ),
+    )
 
     # generate
     p_gen = sub.add_parser("generate", parents=[shared], help="Emit training commands")
@@ -155,12 +197,21 @@ def _make_parser() -> argparse.ArgumentParser:
     p_plt.add_argument("--plots_dir", default="outputs/plots/chinchilla")
     p_plt.set_defaults(func=plot)
 
+    # plot_T — T-axis comparison across temperatures (n-body)
+    p_plt_t = sub.add_parser(
+        "plot_T", parents=[shared],
+        help="Compare n-body scaling across temperatures (T sweep)",
+    )
+    p_plt_t.add_argument("--plots_dir", default="outputs/plots/chinchilla")
+    p_plt_t.set_defaults(func=plot_T)
+
     return parser
 
 
 def main() -> None:
     parser = _make_parser()
     args = parser.parse_args()
+    _expand_nbody_temps(args)
     args.func(args)
 
 

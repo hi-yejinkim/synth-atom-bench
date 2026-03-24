@@ -292,16 +292,31 @@ def fit_approach1(args: argparse.Namespace) -> None:
                     best_idx = int(np.argmin(VRs))
                     N_star = float(Ns[best_idx])
 
-                # Interpolate C at N_star
+                # Interpolate C, D, VR at N_star (all consistent with the
+                # same interpolation point rather than mixing median/min)
+                log_N_star_val = np.log(N_star)
                 try:
                     interp_C = PchipInterpolator(log_N, np.log(Cs_d))
-                    C_star = float(np.exp(interp_C(np.log(N_star))))
+                    C_star = float(np.exp(interp_C(log_N_star_val)))
                 except Exception:
                     best_idx = int(np.argmin(np.abs(Ns - N_star)))
                     C_star = float(Cs_d[best_idx])
 
-                D_star = float(np.median(Ds_d))
-                VR_star = float(np.min(VRs))
+                try:
+                    interp_D = PchipInterpolator(log_N, np.log(Ds_d))
+                    D_star = float(np.exp(interp_D(log_N_star_val)))
+                except Exception:
+                    D_star = float(np.median(Ds_d))
+
+                # VR at N_star from the quadratic fit (consistent with how
+                # N_star was found), clipped to observed range
+                if len(d_pts) >= 3 and len(coeffs) == 3:
+                    log_VR_star = float(np.polyval(coeffs, log_N_star_val))
+                    VR_star = max(float(np.exp(log_VR_star)), 1e-6)
+                    # Don't let fitted VR exceed observed range
+                    VR_star = min(VR_star, float(VRs.max()))
+                else:
+                    VR_star = float(np.min(VRs))
                 regime = (
                     "not_converged"   if VR_star >= 0.99
                     else "chinchilla_valid" if D_star >= 6 * N_star

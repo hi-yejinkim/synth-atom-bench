@@ -4,6 +4,9 @@ import math
 import os
 import sys
 
+# Force unbuffered stdout/stderr so logs appear immediately when redirected to file
+os.environ.setdefault("PYTHONUNBUFFERED", "1")
+
 # Monkey-patch argparse for Python 3.14 compatibility with Hydra's LazyCompletionHelp
 import argparse
 
@@ -27,6 +30,7 @@ from torch.utils.data import DataLoader
 
 from data.chain_dataset import ChainDataset
 from data.dataset import HardSphereDataset
+from data.nbody_dataset import NBodyDataset
 from data.vsepr_dataset import VSEPRDataset
 from data.sequence_dataset import SequenceDataset
 from data.unified_dataset import UnifiedDataset
@@ -38,6 +42,7 @@ from data.validate import pair_correlation
 from metrics.bond_violation import bond_violation_rate_batched, nonbonded_clash_rate_batched
 from metrics.clash_rate import clash_rate_batched
 from metrics.gr_distance import gr_distance
+from metrics.wasserstein_distance import energy_w2_batched
 from experiments.model_registry import MODEL_REGISTRY, SIZE_PRESETS
 from experiments.task_registry import get_violation_rate, infer_task_id
 
@@ -66,10 +71,17 @@ def is_unified_config(cfg: DictConfig) -> bool:
     return hasattr(cfg.data, "unified_structure") and cfg.data.unified_structure
 
 
+def is_nbody_config(cfg: DictConfig) -> bool:
+    """Check if config describes an n-body energy distribution task."""
+    return hasattr(cfg.data, "nbody") and cfg.data.nbody
+
+
 def load_dataset(cfg: DictConfig, path: str, max_samples: int | None = None):
     """Load the appropriate dataset class based on config."""
     if is_unified_config(cfg):
         return UnifiedDataset(path, max_samples=max_samples)
+    if is_nbody_config(cfg):
+        return NBodyDataset(path, max_samples=max_samples)
     if is_vsepr_config(cfg):
         return VSEPRDataset(path, max_samples=max_samples)
     if is_sequence_config(cfg):
@@ -195,6 +207,24 @@ def evaluate(
         grd = gr_distance(samples.numpy(), gt_r, gt_g_r, dataset.box_size)
 
     result = {"clash_rate": cr, "gr_distance": grd, "samples": samples}
+
+    # n-body energy W1/W2 metrics
+    if is_nbody_config(cfg):
+        from metrics.wasserstein_distance import energy_w2_from_positions
+        wd = energy_w2_from_positions(
+            samples.numpy(),
+            dataset.energies.numpy(),
+            body=dataset.body,
+            sigma=dataset.sigma,
+            epsilon=dataset.epsilon,
+            nu=dataset.nu,
+            mu=dataset.mu,
+            box_size=dataset.box_size,
+            bc=dataset.bc,
+        )
+        result["energy_w1"] = wd["w1_total"]
+        result["energy_w2"] = wd["w2_total"]
+        result["ref_energy_std"] = float(dataset.energies.std())
 
     # Chain-specific metrics
     if is_chain_config(cfg):
@@ -412,6 +442,8 @@ def main(cfg: DictConfig) -> None:
         run_name = f"{cfg.model.arch}_N{n_atoms}_seq_{cfg.data.polymer_type}"
     elif is_chain_config(cfg):
         run_name = f"{cfg.model.arch}_N{n_atoms}_chain"
+    elif is_nbody_config(cfg):
+        run_name = f"{cfg.model.arch}_N{n_atoms}_nbody_b{cfg.data.body}_T{cfg.data.T}"
     else:
         run_name = f"{cfg.model.arch}_N{n_atoms}_eta{cfg.data.eta}"
     config_dict = OmegaConf.to_container(cfg, resolve=True)
@@ -506,7 +538,8 @@ def main(cfg: DictConfig) -> None:
                             "bond_angle_violation_rate",
                             "bb_bond_length_violation_rate", "sc_bond_length_violation_rate",
                             "pi_planarity_violation_rate", "contact_recall",
-                            "periodicity_violation_rate"]:
+                            "periodicity_violation_rate",
+                            "energy_w1", "energy_w2"]:
                     if rk in ev:
                         traj_record[rk] = float(ev[rk])
                 _traj_file.write(_json.dumps(traj_record) + "\n")
@@ -538,6 +571,11 @@ def main(cfg: DictConfig) -> None:
                 if "rg_error" in ev:
                     log_metrics["eval/rg_error"] = ev["rg_error"]
                     ckpt_kwargs["rg_error"] = ev["rg_error"]
+            if is_nbody_config(cfg) and "energy_w2" in ev:
+                log_metrics["eval/energy_w1"] = ev["energy_w1"]
+                log_metrics["eval/energy_w2"] = ev["energy_w2"]
+                ckpt_kwargs["energy_w1"] = ev["energy_w1"]
+                ckpt_kwargs["energy_w2"] = ev["energy_w2"]
             if is_unified_config(cfg):
                 vr = ev.get("violation_rate", 0.0)
                 log_metrics["eval/violation_rate"] = vr
@@ -559,6 +597,8 @@ def main(cfg: DictConfig) -> None:
                 msg += f" | angle JSD: {ev['angle_jsd']:.4f} | in-peak: {ev['bond_length_in_peak_ratio']:.4f}"
             if is_sequence_config(cfg):
                 msg += f" | contact recall: {ev['contact_recall']:.4f} | bond viol: {ev['seq_bond_violation_rate']:.4f}"
+            if is_nbody_config(cfg) and "energy_w2" in ev:
+                msg += f" | energy W1: {ev['energy_w1']:.4f} W2: {ev['energy_w2']:.4f}"
             if is_unified_config(cfg):
                 msg += f" | violation: {ev.get('violation_rate', 0.0):.4f}"
             msg += f" | Best g(r): {ckpt_mgr.best_gr_distance:.4f}"
