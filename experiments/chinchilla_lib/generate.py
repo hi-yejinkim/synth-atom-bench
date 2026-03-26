@@ -37,13 +37,15 @@ def generate(args: argparse.Namespace) -> None:
         n_atoms = spec.n_atoms
         grid_meta: dict[str, dict] = {}
 
+        is_nbody = task_id.startswith("nbody_")
         print(f"\n=== Task: {task_id} ({spec.description}) ===", file=sys.stderr)
 
         for arch in archs:
             for size in sizes:
                 key = f"{arch}/{size}"
                 try:
-                    n_params, fps = _measure_flops(arch, size, n_atoms, BATCH_SIZE)
+                    n_params, fps = _measure_flops(arch, size, n_atoms, BATCH_SIZE,
+                                                   aux_dist=is_nbody)
                 except Exception as e:
                     print(f"[WARN] {key}: FLOPs failed: {e}", file=sys.stderr)
                     continue

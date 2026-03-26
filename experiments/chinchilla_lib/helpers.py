@@ -10,6 +10,22 @@ from experiments.chinchilla_lib.config import (
 )
 
 
+def _metric_key(task_id: str) -> str:
+    """Return the trajectory.jsonl metric key for a given task.
+
+    Most tasks use 'violation_rate' (bounded [0,1]).
+    N-body tasks use 'energy_w2' (Wasserstein-2 distance, unbounded positive).
+    """
+    if task_id.startswith("nbody_"):
+        return "energy_w2"
+    return "violation_rate"
+
+
+def _metric_is_bounded(task_id: str) -> bool:
+    """Return True if the task's metric is bounded in [0,1]."""
+    return not task_id.startswith("nbody_")
+
+
 def _lr_name(lr: float) -> str:
     return LR_NAMES.get(lr, f"lr{lr:.0e}")
 
@@ -72,8 +88,13 @@ def _get_grad_accum(arch: str, size: str, n_atoms: int,
     return min(ga, batch_size)  # never exceed batch_size
 
 
-def _measure_flops(arch: str, size: str, n_atoms: int, batch_size: int) -> tuple[int, int]:
+def _measure_flops(arch: str, size: str, n_atoms: int, batch_size: int,
+                   aux_dist: bool = False) -> tuple[int, int]:
     """Instantiate model, count params and FLOPs per step.
+
+    Args:
+        aux_dist: If True, add auxiliary pairwise distance loss FLOPs
+            (two cdist calls + MSE on N×N matrices). Used for n-body tasks.
 
     Returns:
         (n_params, flops_per_step)
@@ -118,6 +139,10 @@ def _measure_flops(arch: str, size: str, n_atoms: int, batch_size: int) -> tuple
                     torch.cuda.empty_cache()
                 continue
         if flops_fwd_1 is not None:
+            # Add auxiliary pairwise distance loss FLOPs for n-body tasks:
+            # Two cdist calls on (1, N, 3) → 2 × N × N × 3 multiply-adds each
+            if aux_dist:
+                flops_fwd_1 += 2 * (2 * n_atoms * n_atoms * 3)
             # Scale to full batch_size and account for forward + backward
             flops_per_step = int(flops_fwd_1 * batch_size * 3)
         else:

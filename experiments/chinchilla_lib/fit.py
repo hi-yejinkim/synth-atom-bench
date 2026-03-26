@@ -11,7 +11,8 @@ import numpy as np
 
 from experiments.chinchilla_lib.config import ALL_ARCHS
 from experiments.chinchilla_lib.helpers import (
-    _fits_approach1_path, _fits_path, _results_path,
+    _fits_approach1_path, _fits_path, _metric_is_bounded, _metric_key,
+    _results_path,
 )
 
 
@@ -53,6 +54,9 @@ def fit(args: argparse.Namespace) -> None:
         # each point corresponds to a separately trained model with schedule-optimal LR.
         best_by_size_d = results.get("best_by_size_d", {})
 
+        mkey = _metric_key(task_id)
+        bounded = _metric_is_bounded(task_id)
+
         arch_fits: dict[str, dict] = {}
         for arch in ALL_ARCHS:
             Ns, Ds, Ls = [], [], []
@@ -60,14 +64,14 @@ def fit(args: argparse.Namespace) -> None:
                 if traj["arch"] != arch:
                     continue
                 pt = traj["terminal"]
-                vr = pt.get("violation_rate")
+                metric_val = pt.get(mkey)
                 D_seen = pt.get("D_seen")
                 n_p = traj.get("n_params")
-                if vr is None or D_seen is None or n_p is None:
+                if metric_val is None or D_seen is None or n_p is None:
                     continue
                 Ns.append(n_p)
                 Ds.append(D_seen)
-                Ls.append(vr)
+                Ls.append(metric_val)
 
             if len(Ns) < 6:
                 print(f"[{task_id}/{arch}] Insufficient data ({len(Ns)} pts), skipping fit")
@@ -83,6 +87,20 @@ def fit(args: argparse.Namespace) -> None:
             if len(N_arr) < 6:
                 print(f"[{task_id}/{arch}] Too few finite points, skipping fit")
                 continue
+
+            # Exclude clipped VR points (≥ 0.99) — they carry no gradient signal
+            # and bias the parametric fit (especially alpha, beta exponents).
+            # Only applies to bounded metrics (violation_rate ∈ [0,1]).
+            if bounded:
+                n_before = len(L_arr)
+                clip_mask = L_arr < 0.99
+                N_arr, D_arr, L_arr = N_arr[clip_mask], D_arr[clip_mask], L_arr[clip_mask]
+                n_clipped = n_before - len(L_arr)
+                if n_clipped > 0:
+                    print(f"[{task_id}/{arch}] Excluded {n_clipped}/{n_before} clipped VR≥0.99 points")
+                if len(N_arr) < 6:
+                    print(f"[{task_id}/{arch}] Too few points after VR clip filter ({len(N_arr)}), skipping fit")
+                    continue
 
             # Normalize to avoid numerical instability
             N_scale = float(np.median(N_arr))
@@ -104,8 +122,9 @@ def fit(args: argparse.Namespace) -> None:
 
             # ── Direct fit: L = E + A/N^alpha + B/D^beta ──────────────────────
             L_floor = max(float(L_arr.min()) * 0.1, 1e-6)
+            E_upper = 1.0 if bounded else float(L_arr.max()) * 10
             p0_direct = [L_floor, 1.0, 0.5, 1.0, 0.5]
-            bounds_direct = ([0, 1e-6, 0.01, 1e-6, 0.01], [1.0, 1e4, 5.0, 1e4, 5.0])
+            bounds_direct = ([0, 1e-6, 0.01, 1e-6, 0.01], [E_upper, 1e4, 5.0, 1e4, 5.0])
             fit_direct: dict = {}
             try:
                 popt = _try_fit(L_arr, bounds_direct, p0_direct)
@@ -138,8 +157,9 @@ def fit(args: argparse.Namespace) -> None:
             # Applicable when L in (0,1) (e.g. violation_rate).
             # Logit transform linearizes the bounded metric, giving better
             # power-law fits and interpretable E' = logit(irreducible floor).
+            # Skip for unbounded metrics (e.g. energy_w2).
             fit_logit: dict = {}
-            vr_in_range = (L_arr > 0) & (L_arr < 1)
+            vr_in_range = (L_arr > 0) & (L_arr < 1) if bounded else np.zeros(len(L_arr), dtype=bool)
             if vr_in_range.sum() >= 6:
                 eps = 1e-6
                 L_clip = np.clip(L_arr, eps, 1.0 - eps)
@@ -236,6 +256,8 @@ def fit_approach1(args: argparse.Namespace) -> None:
             results = json.load(f)
 
         best_by_size_d = results.get("best_by_size_d", {})
+        mkey = _metric_key(task_id)
+        bounded = _metric_is_bounded(task_id)
 
         arch_fits: dict[str, dict] = {}
         for arch in ALL_ARCHS:
@@ -245,18 +267,18 @@ def fit_approach1(args: argparse.Namespace) -> None:
                 if traj["arch"] != arch:
                     continue
                 pt = traj["terminal"]
-                vr = pt.get("violation_rate")
+                metric_val = pt.get(mkey)
                 D_seen = pt.get("D_seen")
                 n_p = traj.get("n_params")
                 fps = traj.get("flops_per_step", 0)
                 step = pt.get("step", 0)
                 d_name = traj.get("d_name", cell_key.split("/")[-1])
                 C = fps * step if fps and step else pt.get("total_flops", 0)
-                if None in (vr, D_seen, n_p) or C <= 0:
+                if None in (metric_val, D_seen, n_p) or C <= 0:
                     continue
                 by_d.setdefault(d_name, []).append({
                     "C": float(C), "N": float(n_p), "D": float(D_seen),
-                    "VR": float(vr), "d_name": d_name,
+                    "VR": float(metric_val), "d_name": d_name,
                 })
 
             if not by_d:
@@ -317,18 +339,24 @@ def fit_approach1(args: argparse.Namespace) -> None:
                     VR_star = min(VR_star, float(VRs.max()))
                 else:
                     VR_star = float(np.min(VRs))
-                regime = (
-                    "not_converged"   if VR_star >= 0.99
-                    else "chinchilla_valid" if D_star >= 6 * N_star
-                    else "data_limited"
-                )
+                if bounded:
+                    regime = (
+                        "not_converged"   if VR_star >= 0.99
+                        else "chinchilla_valid" if D_star >= 6 * N_star
+                        else "data_limited"
+                    )
+                else:
+                    regime = (
+                        "chinchilla_valid" if D_star >= 6 * N_star
+                        else "data_limited"
+                    )
                 opt_pts.append({
                     "C": C_star, "N": N_star, "D": D_star, "VR": VR_star,
                     "d_name": d_name, "regime": regime,
                 })
 
-            # Filter to converged points
-            env_valid = [p for p in opt_pts if p["VR"] < 0.99]
+            # Filter to converged points (only clip bounded metrics)
+            env_valid = [p for p in opt_pts if p["regime"] != "not_converged"]
 
             if len(env_valid) < 2:
                 print(

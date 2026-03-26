@@ -14,7 +14,7 @@ from flow_matching.sampling import sample_batched
 from metrics.bond_violation import bond_violation_rate_batched, nonbonded_clash_rate_batched
 from metrics.clash_rate import clash_rate_batched
 from metrics.gr_distance import gr_distance
-from metrics.wasserstein_distance import energy_w2, energy_w2_batched
+from metrics.wasserstein_distance import energy_w2, energy_w2_from_positions
 from models.painn import PaiNNVelocityNetwork
 from models.pairformer import PairformerVelocityNetwork
 from models.transformer import TransformerVelocityNetwork
@@ -120,14 +120,17 @@ def main():
     # Compute metrics
     cr = clash_rate_batched(samples, radius)
 
-    # n-body energy Wasserstein-2 metric
+    # n-body energy Wasserstein metrics
+    w1 = None
     w2 = None
     if is_nbody:
         print("Computing energy Wasserstein distance...")
-        w2 = energy_w2_batched(
+        wd = energy_w2_from_positions(
             samples.numpy(), ref_energies,
             **nbody_params,
         )
+        w1 = wd["w1_total"]
+        w2 = wd["w2_total"]
 
     # Ground truth g(r) for distance metric
     from data.validate import pair_correlation
@@ -146,7 +149,8 @@ def main():
     print(f"  Samples generated: {args.n_samples}")
     print(f"  Clash rate:        {cr:.4f}")
     print(f"  g(r) distance:     {grd:.4f}")
-    if w2 is not None:
+    if w1 is not None:
+        print(f"  Energy W1:         {w1:.4f}")
         print(f"  Energy W2:         {w2:.4f}")
     if is_chain:
         print(f"  Bond violation:    {bvr:.4f}")
@@ -165,7 +169,8 @@ def main():
         gr_distance=grd,
         step=state.step,
     )
-    if w2 is not None:
+    if w1 is not None and w2 is not None:
+        save_kwargs["energy_w1"] = w1
         save_kwargs["energy_w2"] = w2
     if is_chain:
         save_kwargs["bond_violation_rate"] = bvr

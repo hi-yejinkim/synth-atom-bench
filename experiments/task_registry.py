@@ -327,7 +327,12 @@ def get_violation_rate(eval_result: dict, task_id: str) -> float:
         # Normalize W1 by reference energy std to get a [0, ~1] scale
         # W1 is more robust to outliers than W2 for scaling law fitting
         w1 = float(eval_result.get("energy_w1", eval_result.get("energy_w2", float("inf"))))
-        ref_std = float(eval_result.get("ref_energy_std", 1.0))
+        if "ref_energy_std" not in eval_result:
+            raise KeyError(
+                f"eval_result missing 'ref_energy_std' for nbody task '{task_id}'. "
+                "Ensure evaluate() computes dataset.energies.std()."
+            )
+        ref_std = float(eval_result["ref_energy_std"])
         return float(min(w1 / (ref_std + 1e-8), 1.0))
 
     # Fallback: should not be reached given the registry above

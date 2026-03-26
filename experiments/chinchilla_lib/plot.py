@@ -31,7 +31,8 @@ from matplotlib.colors import LogNorm
 from viz.style import ARCH_COLORS, ARCH_MARKERS, SINGLE_COL, DOUBLE_COL
 
 from experiments.chinchilla_lib.helpers import (
-    _fits_approach1_path, _fits_path, _results_path,
+    _fits_approach1_path, _fits_path, _metric_key, _metric_is_bounded,
+    _results_path,
 )
 
 
@@ -102,13 +103,22 @@ def _arch_display(arch: str) -> str:
     return _ARCH_DISPLAY.get(arch, arch)
 
 
+def _metric_label(task_id: str) -> str:
+    """Y-axis label for the task's primary metric."""
+    if task_id.startswith("nbody_"):
+        return "Energy W₂ distance"
+    return "Violation rate"
+
+
 def _clip_vr(vr: float | np.ndarray) -> float | np.ndarray:
     """Clip VR to floor for consistent log-space handling."""
     return np.clip(vr, _VR_FLOOR, None)
 
 
-def _extract_terminal_points(best_by_size_d: dict[str, dict]) -> list[dict]:
+def _extract_terminal_points(best_by_size_d: dict[str, dict],
+                             task_id: str = "") -> list[dict]:
     """Extract flat list of terminal (arch, N, D_seen, C, VR, d_name, size)."""
+    mkey = _metric_key(task_id) if task_id else "violation_rate"
     points = []
     for key, traj in best_by_size_d.items():
         arch = traj["arch"]
@@ -116,15 +126,15 @@ def _extract_terminal_points(best_by_size_d: dict[str, dict]) -> list[dict]:
         N = traj.get("n_params", 0)
         fps = traj.get("flops_per_step", 0)
         step = pt.get("step", 0)
-        vr = pt.get("violation_rate")
+        metric_val = pt.get(mkey)
         D_seen = pt.get("D_seen", 0)
         d_name = traj.get("d_name", key.split("/")[-1])
         size = traj.get("size", "")
-        if N <= 0 or fps <= 0 or step <= 0 or vr is None:
+        if N <= 0 or fps <= 0 or step <= 0 or metric_val is None:
             continue
         C = fps * step
         points.append(dict(arch=arch, N=N, D_seen=D_seen, C=C,
-                           VR=max(vr, _VR_FLOOR), d_name=d_name, size=size))
+                           VR=max(metric_val, _VR_FLOOR), d_name=d_name, size=size))
     return points
 
 
@@ -134,8 +144,9 @@ def plot_isoflop_curves(
     best_by_size_d: dict[str, dict],
     task_id: str,
 ) -> dict[str, plt.Figure]:
-    """N vs violation_rate at each D-budget level (one curve per D level)."""
+    """N vs metric at each D-budget level (one curve per D level)."""
     task_label = _TASK_LABELS.get(task_id, task_id)
+    mkey = _metric_key(task_id)
 
     data: dict[str, dict[str, list]] = {}
     for cell_key, traj in best_by_size_d.items():
@@ -143,13 +154,13 @@ def plot_isoflop_curves(
         d_name = traj.get("d_name") or cell_key.split("/")[-1]
         pt = traj.get("terminal", {})
         N = traj.get("n_params", 0)
-        vr = pt.get("violation_rate")
+        metric_val = pt.get(mkey)
         D_seen = pt.get("D_seen")
-        if N <= 0 or vr is None:
+        if N <= 0 or metric_val is None:
             continue
         if arch not in data:
             data[arch] = {}
-        data[arch].setdefault(d_name, []).append((N, max(vr, _VR_FLOOR), D_seen or 0))
+        data[arch].setdefault(d_name, []).append((N, max(metric_val, _VR_FLOOR), D_seen or 0))
 
     figs: dict[str, plt.Figure] = {}
     for arch, d_data in data.items():
@@ -186,7 +197,7 @@ def plot_isoflop_curves(
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlabel("Model parameters N")
-        ax.set_ylabel("Violation rate")
+        ax.set_ylabel(_metric_label(task_id))
         ax.legend(frameon=False, fontsize=8)
         figs[arch] = fig
 
@@ -197,18 +208,19 @@ def plot_training_trajectories(
     trajectories: list[dict],
     task_id: str,
 ) -> dict[str, plt.Figure]:
-    """Violation rate vs. D_seen during training, colored by model size."""
+    """Metric vs. D_seen during training, colored by model size."""
     task_label = _TASK_LABELS.get(task_id, task_id)
+    mkey = _metric_key(task_id)
 
     best: dict[tuple, dict] = {}
     for traj in trajectories:
         arch, size = traj["arch"], traj["size"]
         if not traj["points"]:
             continue
-        final_vr = traj["points"][-1]["violation_rate"]
+        final_val = traj["points"][-1].get(mkey, float("inf"))
         key = (arch, size)
-        if key not in best or final_vr < best[key]["final_vr"]:
-            best[key] = {**traj, "final_vr": final_vr}
+        if key not in best or final_val < best[key]["final_metric"]:
+            best[key] = {**traj, "final_metric": final_val}
 
     by_arch: dict[str, list[dict]] = {}
     for (arch, size), traj in best.items():
@@ -227,7 +239,7 @@ def plot_training_trajectories(
             if not traj["points"]:
                 continue
             D_seen = [pt["D_seen"] for pt in traj["points"]]
-            VRs = [max(pt["violation_rate"], _VR_FLOOR) for pt in traj["points"]]
+            VRs = [max(pt.get(mkey, 1.0), _VR_FLOOR) for pt in traj["points"]]
             color = cmap(i / max(n - 1, 1))
             ax.plot(D_seen, VRs, "-", color=color, linewidth=1.2, alpha=0.85,
                     label=f"N={traj['n_params']:,}" if i % 3 == 0 else None)
@@ -245,7 +257,7 @@ def plot_training_trajectories(
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlabel("Training samples seen (D)")
-        ax.set_ylabel("Violation rate")
+        ax.set_ylabel(_metric_label(task_id))
 
         figs[arch] = fig
 
@@ -258,6 +270,7 @@ def plot_arch_comparison(
 ) -> plt.Figure:
     """All 3 architectures on same axes, one subplot per D-budget level."""
     task_label = _TASK_LABELS.get(task_id, task_id)
+    mkey = _metric_key(task_id)
 
     data: dict[str, dict[str, list]] = {}
     d_seen_by_name: dict[str, list] = {}
@@ -266,11 +279,11 @@ def plot_arch_comparison(
         d_name = traj.get("d_name") or cell_key.split("/")[-1]
         pt = traj.get("terminal", {})
         N = traj.get("n_params", 0)
-        vr = pt.get("violation_rate")
+        metric_val = pt.get(mkey)
         D_seen = pt.get("D_seen", 0)
-        if N <= 0 or vr is None:
+        if N <= 0 or metric_val is None:
             continue
-        data.setdefault(d_name, {}).setdefault(arch, []).append((N, max(vr, _VR_FLOOR)))
+        data.setdefault(d_name, {}).setdefault(arch, []).append((N, max(metric_val, _VR_FLOOR)))
         d_seen_by_name.setdefault(d_name, []).append(D_seen)
 
     d_names_sorted = sorted(data.keys())
@@ -308,7 +321,7 @@ def plot_arch_comparison(
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlabel("N (params)", fontsize=8)
-        ax.set_ylabel("Violation rate", fontsize=8)
+        ax.set_ylabel(_metric_label(task_id), fontsize=8)
         ax.tick_params(labelsize=7)
         ax.legend(frameon=False, fontsize=7)
 
@@ -323,8 +336,9 @@ def plot_isoflop_envelope(
     best_by_size_d: dict[str, dict],
     task_id: str,
 ) -> plt.Figure:
-    """Compute-performance frontier: total FLOPs C vs best VR per arch."""
+    """Compute-performance frontier: total FLOPs C vs best metric per arch."""
     task_label = _TASK_LABELS.get(task_id, task_id)
+    mkey = _metric_key(task_id)
 
     arch_points: dict[str, list[tuple[float, float, float, float]]] = {}
     for cell_key, traj in best_by_size_d.items():
@@ -332,13 +346,13 @@ def plot_isoflop_envelope(
         pt = traj.get("terminal", {})
         fps = traj.get("flops_per_step", 0)
         step = pt.get("step", 0)
-        vr = pt.get("violation_rate")
+        metric_val = pt.get(mkey)
         n_p = traj.get("n_params", 0)
         D_seen = pt.get("D_seen", 0)
-        if fps <= 0 or step <= 0 or vr is None:
+        if fps <= 0 or step <= 0 or metric_val is None:
             continue
         C = fps * step
-        arch_points.setdefault(arch, []).append((C, n_p, D_seen, max(vr, _VR_FLOOR)))
+        arch_points.setdefault(arch, []).append((C, n_p, D_seen, max(metric_val, _VR_FLOOR)))
 
     if not arch_points:
         fig, ax = plt.subplots(figsize=(5.5, 4))
@@ -374,7 +388,7 @@ def plot_isoflop_envelope(
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Total training FLOPs C")
-    ax.set_ylabel("Violation rate (lower = better)")
+    ax.set_ylabel(f"{_metric_label(task_id)} (lower = better)")
     ax.legend(frameon=False, fontsize=9)
     fig.tight_layout()
     return fig
@@ -389,7 +403,7 @@ def plot_smooth_envelope(
     from scipy.optimize import curve_fit
 
     task_label = _TASK_LABELS.get(task_id, task_id)
-    points = _extract_terminal_points(best_by_size_d)
+    points = _extract_terminal_points(best_by_size_d, task_id)
 
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.set_title(f"Compute–Performance Frontier — {task_label}", fontsize=12)
@@ -473,7 +487,7 @@ def plot_smooth_envelope(
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Total training FLOPs C", fontsize=12)
-    ax.set_ylabel("Violation rate (lower = better)", fontsize=12)
+    ax.set_ylabel(f"{_metric_label(task_id)} (lower = better)", fontsize=12)
     ax.legend(frameon=False, fontsize=11, loc="lower left")
     ax.grid(True, which="major", alpha=0.3)
     ax.grid(True, which="minor", alpha=0.1)
@@ -498,7 +512,8 @@ def plot_optimal_ND_from_envelope(
     converged (VR < 0.99) envelope points.
     """
     task_label = _TASK_LABELS.get(task_id, task_id)
-    points = _extract_terminal_points(best_by_size_d)
+    bounded = _metric_is_bounded(task_id)
+    points = _extract_terminal_points(best_by_size_d, task_id)
 
     fig, (ax_N, ax_D) = plt.subplots(1, 2, figsize=(12, 5))
     fig.suptitle(f"Compute-Optimal Allocation (frontier) — {task_label}", fontsize=13)
@@ -534,7 +549,7 @@ def plot_optimal_ND_from_envelope(
         env_VR = np.array(env_VR)
 
         # Scatter: envelope-optimal points
-        converged = env_VR < 0.99
+        converged = env_VR < 0.99 if bounded else np.ones(len(env_VR), dtype=bool)
         unconverged = ~converged
         if converged.any():
             ax_N.scatter(env_C[converged], env_N[converged], color=color, s=80,
@@ -605,9 +620,9 @@ def plot_vr_vs_flops_by_data(
     task_id: str,
     d_unique_labels: dict[str, str] | None = None,
 ) -> plt.Figure:
-    """Per-arch subplots: VR vs total FLOPs, one line per data budget."""
+    """Per-arch subplots: metric vs total FLOPs, one line per data budget."""
     task_label = _TASK_LABELS.get(task_id, task_id)
-    points = _extract_terminal_points(best_by_size_d)
+    points = _extract_terminal_points(best_by_size_d, task_id)
     d_unique_labels = d_unique_labels or {}
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
@@ -667,9 +682,9 @@ def plot_vr_vs_flops_by_params(
     best_by_size_d: dict[str, dict],
     task_id: str,
 ) -> plt.Figure:
-    """Per-arch subplots: VR vs total FLOPs, one line per model size."""
+    """Per-arch subplots: metric vs total FLOPs, one line per model size."""
     task_label = _TASK_LABELS.get(task_id, task_id)
-    points = _extract_terminal_points(best_by_size_d)
+    points = _extract_terminal_points(best_by_size_d, task_id)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     fig.suptitle(f"Violation Rate vs. FLOPs by Model Size — {task_label}", fontsize=13)
@@ -730,8 +745,9 @@ def plot_N_D_regime_map(
     task_id: str,
     fits: dict[str, dict] | None = None,
 ) -> dict[str, plt.Figure]:
-    """N-D scatter colored by VR with regime boundary and optional L(N,D) contours."""
+    """N-D scatter colored by metric with regime boundary and optional L(N,D) contours."""
     task_label = _TASK_LABELS.get(task_id, task_id)
+    mkey = _metric_key(task_id)
 
     arch_data: dict[str, list[tuple[float, float, float]]] = {}
     for key, traj in best_by_size_d.items():
@@ -739,10 +755,10 @@ def plot_N_D_regime_map(
         N = traj.get("n_params", 0)
         pt = traj.get("terminal", {})
         D = pt.get("D_seen", 0)
-        vr = pt.get("violation_rate")
-        if N <= 0 or D <= 0 or vr is None:
+        metric_val = pt.get(mkey)
+        if N <= 0 or D <= 0 or metric_val is None:
             continue
-        arch_data.setdefault(arch, []).append((N, D, max(vr, _VR_FLOOR)))
+        arch_data.setdefault(arch, []).append((N, D, max(metric_val, _VR_FLOOR)))
 
     figs: dict[str, plt.Figure] = {}
     for arch, pts in arch_data.items():
@@ -806,6 +822,7 @@ def plot_loss_surface(
     beta = fit_params["beta"]
     r2 = fit_params.get("r_squared", float("nan"))
 
+    mkey = _metric_key(task_id)
     scatter_N, scatter_D, scatter_L = [], [], []
     for key, traj in best_by_size.items():
         if traj["arch"] != arch:
@@ -814,7 +831,7 @@ def plot_loss_surface(
         for pt in traj["points"]:
             scatter_N.append(N)
             scatter_D.append(pt["D_seen"])
-            scatter_L.append(max(pt["violation_rate"], _VR_FLOOR))
+            scatter_L.append(max(pt.get(mkey, 1.0), _VR_FLOOR))
 
     if not scatter_N:
         fig, ax = plt.subplots(figsize=SINGLE_COL)
@@ -1296,11 +1313,12 @@ def plot_T_compute_frontier(
         task_results: {task_id: results.json content} for nbody tasks with different T.
         arch: architecture to plot.
     """
-    T_data: dict[float, list[tuple[float, float]]] = {}  # T → [(C, VR)]
+    T_data: dict[float, list[tuple[float, float]]] = {}  # T → [(C, metric)]
     for task_id, results in task_results.items():
         T = _parse_T_from_task(task_id)
         if T is None:
             continue
+        mkey = _metric_key(task_id)
         best = results.get("best_by_size_d", {})
         for key, traj in best.items():
             if traj["arch"] != arch:
@@ -1308,11 +1326,11 @@ def plot_T_compute_frontier(
             pt = traj.get("terminal", {})
             fps = traj.get("flops_per_step", 0)
             step = pt.get("step", 0)
-            vr = pt.get("violation_rate")
-            if fps <= 0 or step <= 0 or vr is None:
+            metric_val = pt.get(mkey)
+            if fps <= 0 or step <= 0 or metric_val is None:
                 continue
             C = fps * step
-            T_data.setdefault(T, []).append((C, max(vr, _VR_FLOOR)))
+            T_data.setdefault(T, []).append((C, max(metric_val, _VR_FLOOR)))
 
     T_values = sorted(T_data.keys())
     if not T_values:
@@ -1347,7 +1365,7 @@ def plot_T_compute_frontier(
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("Total FLOPs (C)")
-    ax.set_ylabel("Violation rate (energy W2 / σ)")
+    ax.set_ylabel("Energy W₂ distance")
     ax.legend(frameon=False, fontsize=8, title="Temperature")
     fig.tight_layout()
     return fig
@@ -1372,11 +1390,12 @@ def plot_T_isoflop_by_temp(
 
     Each subplot shows curves for different D budgets at one temperature.
     """
-    T_data: dict[float, dict[str, list]] = {}  # T → {d_name: [(N, VR)]}
+    T_data: dict[float, dict[str, list]] = {}  # T → {d_name: [(N, metric)]}
     for task_id, results in task_results.items():
         T = _parse_T_from_task(task_id)
         if T is None:
             continue
+        mkey = _metric_key(task_id)
         best = results.get("best_by_size_d", {})
         for key, traj in best.items():
             if traj["arch"] != arch:
@@ -1384,11 +1403,11 @@ def plot_T_isoflop_by_temp(
             d_name = traj.get("d_name", key.split("/")[-1])
             pt = traj.get("terminal", {})
             N = traj.get("n_params", 0)
-            vr = pt.get("violation_rate")
-            if N <= 0 or vr is None:
+            metric_val = pt.get(mkey)
+            if N <= 0 or metric_val is None:
                 continue
             T_data.setdefault(T, {}).setdefault(d_name, []).append(
-                (N, max(vr, _VR_FLOOR)))
+                (N, max(metric_val, _VR_FLOOR)))
 
     T_values = sorted(T_data.keys())
     if not T_values:
@@ -1423,7 +1442,7 @@ def plot_T_isoflop_by_temp(
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlabel("N (params)", fontsize=8)
-        ax.set_ylabel("Violation rate", fontsize=8)
+        ax.set_ylabel(_metric_label(task_id), fontsize=8)
         ax.tick_params(labelsize=7)
         ax.legend(frameon=False, fontsize=6)
 
@@ -1484,7 +1503,11 @@ def plot_T_training_trajectories(
             if not points:
                 continue
             ds = [p.get("D_seen", p.get("step", 0) * 256) for p in points]
-            vrs = [max(p.get("violation_rate", 1.0), _VR_FLOOR) for p in points]
+            # Use first task_id's metric key (all should be nbody_*)
+            _traj_mkey = "energy_w2" if any(
+                tid.startswith("nbody_") for tid in task_results
+            ) else "violation_rate"
+            vrs = [max(p.get(_traj_mkey, 1.0), _VR_FLOOR) for p in points]
             d_name = traj.get("d_name", "")
             ax.plot(ds, vrs, color=color, alpha=0.6, linewidth=1.0)
 
@@ -1494,7 +1517,8 @@ def plot_T_training_trajectories(
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("D (samples seen)")
-    ax.set_ylabel("Violation rate")
+    _any_nbody = any(tid.startswith("nbody_") for tid in task_results)
+    ax.set_ylabel("Energy W₂ distance" if _any_nbody else "Violation rate")
     ax.legend(frameon=False, fontsize=8, title="Temperature")
     fig.tight_layout()
     return fig

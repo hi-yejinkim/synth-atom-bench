@@ -409,7 +409,8 @@ def main(cfg: DictConfig) -> None:
 
     # Checkpoint dir
     checkpoint_dir = cfg.checkpoint.get("dir") or os.path.join("outputs", "checkpoints", cfg.model.arch)
-    ckpt_mgr = CheckpointManager(checkpoint_dir)
+    primary_metric = "energy_w1" if is_nbody_config(cfg) else "gr_distance"
+    ckpt_mgr = CheckpointManager(checkpoint_dir, primary_metric=primary_metric)
 
     # Resume from checkpoint if available
     start_step = 0
@@ -453,6 +454,12 @@ def main(cfg: DictConfig) -> None:
     # Compute tracker
     tracker = ComputeTracker()
 
+    # N-body loss enhancements: SNR weighting + auxiliary pairwise distance loss
+    _nbody_loss = is_nbody_config(cfg)
+    _aux_dist_w = 0.3 if _nbody_loss else 0.0
+    if _nbody_loss:
+        print("N-body loss: SNR weighting + auxiliary distance loss (0.3)")
+
     # Training loop
     model.train()
     step = start_step
@@ -486,7 +493,10 @@ def main(cfg: DictConfig) -> None:
                 x_0 = x_0 @ R.T
 
             # Forward + backward (scale loss by accum steps for correct gradient magnitude)
-            loss = flow_matching_loss(model, x_0, atom_type_ids=atom_type_ids) / grad_accum_steps
+            loss = flow_matching_loss(
+                model, x_0, atom_type_ids=atom_type_ids,
+                snr_weight=_nbody_loss, aux_dist_weight=_aux_dist_w,
+            ) / grad_accum_steps
             loss.backward()
             accum_loss += loss.item()
 
@@ -539,7 +549,8 @@ def main(cfg: DictConfig) -> None:
                             "bb_bond_length_violation_rate", "sc_bond_length_violation_rate",
                             "pi_planarity_violation_rate", "contact_recall",
                             "periodicity_violation_rate",
-                            "energy_w1", "energy_w2"]:
+                            "energy_w1", "energy_w2", "ref_energy_std",
+                            "gr_distance"]:
                     if rk in ev:
                         traj_record[rk] = float(ev[rk])
                 _traj_file.write(_json.dumps(traj_record) + "\n")
@@ -597,11 +608,14 @@ def main(cfg: DictConfig) -> None:
                 msg += f" | angle JSD: {ev['angle_jsd']:.4f} | in-peak: {ev['bond_length_in_peak_ratio']:.4f}"
             if is_sequence_config(cfg):
                 msg += f" | contact recall: {ev['contact_recall']:.4f} | bond viol: {ev['seq_bond_violation_rate']:.4f}"
-            if is_nbody_config(cfg) and "energy_w2" in ev:
+            if is_nbody_config(cfg) and "energy_w1" in ev:
                 msg += f" | energy W1: {ev['energy_w1']:.4f} W2: {ev['energy_w2']:.4f}"
             if is_unified_config(cfg):
                 msg += f" | violation: {ev.get('violation_rate', 0.0):.4f}"
-            msg += f" | Best g(r): {ckpt_mgr.best_gr_distance:.4f}"
+            if is_nbody_config(cfg):
+                msg += f" | Best E-W1: {ckpt_mgr.best_energy_w1:.4f}"
+            else:
+                msg += f" | Best g(r): {ckpt_mgr.best_gr_distance:.4f}"
             print(msg)
 
         # Periodic checkpoint (without eval)
@@ -631,6 +645,9 @@ def main(cfg: DictConfig) -> None:
         ckpt_kwargs["seq_bond_violation_rate"] = ev["seq_bond_violation_rate"]
         if "rg_error" in ev:
             ckpt_kwargs["rg_error"] = ev["rg_error"]
+    if is_nbody_config(cfg) and "energy_w1" in ev:
+        ckpt_kwargs["energy_w1"] = ev["energy_w1"]
+        ckpt_kwargs["energy_w2"] = ev["energy_w2"]
     if is_unified_config(cfg):
         ckpt_kwargs["violation_rate"] = ev.get("violation_rate", 0.0)
         for mk in ["clash_violation_rate", "slot_violation_rate",
@@ -650,7 +667,10 @@ def main(cfg: DictConfig) -> None:
         msg += f" | contact recall: {ev['contact_recall']:.4f} | bond viol: {ev['seq_bond_violation_rate']:.4f}"
     if is_unified_config(cfg):
         msg += f" | violation: {ev.get('violation_rate', 0.0):.4f}"
-    msg += f" | Best g(r): {ckpt_mgr.best_gr_distance:.4f}"
+    if is_nbody_config(cfg):
+        msg += f" | Best E-W1: {ckpt_mgr.best_energy_w1:.4f}"
+    else:
+        msg += f" | Best g(r): {ckpt_mgr.best_gr_distance:.4f}"
     print(msg)
 
     if _traj_file is not None:

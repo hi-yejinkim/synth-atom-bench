@@ -9,7 +9,7 @@ import os
 import sys
 
 from experiments.chinchilla_lib.config import ALL_ARCHS, D_NAMES, D_STEPS
-from experiments.chinchilla_lib.helpers import _grid_meta_path, _results_path
+from experiments.chinchilla_lib.helpers import _grid_meta_path, _metric_key, _results_path
 
 
 def collect(args: argparse.Namespace) -> None:
@@ -117,14 +117,15 @@ def collect(args: argparse.Namespace) -> None:
             print(f"[WARN] No trajectory data found for task '{task_id}'", file=sys.stderr)
             continue
 
-        # For each (arch, size, d_name): select best LR by terminal violation_rate.
+        # For each (arch, size, d_name): select best LR by terminal metric.
         # Key = (arch, size, d_name) — one winner per D budget per model.
+        mkey = _metric_key(task_id)
         best: dict[tuple, dict] = {}
         for traj in trajectories:
             key = (traj["arch"], traj["size"], traj["d_name"])
-            vr = traj["terminal"].get("violation_rate", float("inf"))
-            if key not in best or vr < best[key]["terminal_vr"]:
-                best[key] = {**traj, "terminal_vr": vr}
+            val = traj["terminal"].get(mkey, float("inf"))
+            if key not in best or val < best[key]["terminal_metric"]:
+                best[key] = {**traj, "terminal_metric": val}
 
         results = {
             "task": task_id,
@@ -156,7 +157,8 @@ def collect(args: argparse.Namespace) -> None:
                     or 0
                 ),
                 "Total_FLOPs_C": int(total_flops),
-                "Final_Violation_Rate": pt.get("violation_rate", float("nan")),
+                "Final_Metric": pt.get(mkey, float("nan")),
+                "Metric_Key": mkey,
                 "task": task_id,
                 "size": size,
                 "d_name": d_name,
@@ -164,7 +166,7 @@ def collect(args: argparse.Namespace) -> None:
             })
         if csv_rows:
             fieldnames = ["Architecture", "Parameters_N", "Data_Tokens_D",
-                          "Total_FLOPs_C", "Final_Violation_Rate",
+                          "Total_FLOPs_C", "Final_Metric", "Metric_Key",
                           "task", "size", "d_name", "lr"]
             with open(csv_path, "w", newline="") as cf:
                 writer = csv.DictWriter(cf, fieldnames=fieldnames)
