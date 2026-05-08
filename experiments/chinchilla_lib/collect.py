@@ -86,11 +86,15 @@ def collect(args: argparse.Namespace) -> None:
                             flops_per_step = 0
 
                         # Terminal point = final eval of this D-budget run
-                        # Skip incomplete runs: verify terminal step ≥ 95% of expected
+                        # Skip incomplete runs: verify terminal step ≥ 95% of expected.
+                        # Use max_steps stored in traj record (multi-epoch aware);
+                        # fall back to D_STEPS (1-epoch default) only for old runs.
                         terminal = points[-1]
                         d_idx = D_NAMES.index(d_name) if d_name in D_NAMES else -1
-                        if d_idx >= 0:
-                            exp_steps = D_STEPS[d_idx]
+                        exp_steps = terminal.get("max_steps") or (
+                            D_STEPS[d_idx] if d_idx >= 0 else None
+                        )
+                        if exp_steps is not None:
                             term_step = terminal.get("step", 0)
                             if term_step < exp_steps * 0.95:
                                 print(f"[WARN] {traj_file}: terminal step {term_step} "
@@ -152,8 +156,9 @@ def collect(args: argparse.Namespace) -> None:
             csv_rows.append({
                 "Architecture": arch,
                 "Parameters_N": traj["n_params"],
-                "Data_Tokens_D": pt.get("D_seen") or (
-                    print(f"[WARN] D_seen missing for {arch}/{size}/{d_name}, CSV row may be wrong", file=sys.stderr)
+                # D_nominal = unique samples (epoch-independent). Fall back to D_seen.
+                "Data_Tokens_D": pt.get("D_nominal") or pt.get("D_seen") or (
+                    print(f"[WARN] D_nominal/D_seen missing for {arch}/{size}/{d_name}", file=sys.stderr)
                     or 0
                 ),
                 "Total_FLOPs_C": int(total_flops),

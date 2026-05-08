@@ -164,6 +164,11 @@ class TransformerVelocityNetwork(nn.Module):
 
     Uses DiT-style adaLN-Zero conditioning and pairwise distance attention
     bias with Gaussian RBF expansion, following the SimpleFold architecture.
+
+    For chain tasks (use_chain_pe=True), an additional learned attention bias
+    based on chain index separation |i - j| is added.  This lets the model
+    distinguish bonded neighbours from distant atoms without breaking the
+    distance-based inductive bias.
     """
 
     def __init__(
@@ -175,10 +180,12 @@ class TransformerVelocityNetwork(nn.Module):
         cutoff: float = 10.0,
         mlp_ratio: float = 4.0,
         num_atom_types: int = 4,
+        use_chain_pe: bool = False,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
+        self.use_chain_pe = use_chain_pe
 
         # Input: 3D coordinates → hidden_dim
         self.input_proj = nn.Linear(3, hidden_dim)
@@ -189,6 +196,13 @@ class TransformerVelocityNetwork(nn.Module):
         # Pairwise distance bias: distances → RBF → per-head bias
         self.rbf = GaussianRBF(num_rbf, cutoff)
         self.pair_proj = nn.Linear(num_rbf, num_heads, bias=False)
+
+        # Chain sequential position bias: learned per (|i-j|, head) offset.
+        # Zero-initialised so training starts identical to the non-chain case.
+        # max_chain_len=256 comfortably covers all current tasks (N=15).
+        if use_chain_pe:
+            self.chain_pos_bias = nn.Embedding(256, num_heads)
+            nn.init.zeros_(self.chain_pos_bias.weight)
 
         # Timestep → conditioning vector (sinusoidal + MLP)
         self.time_embed = SinusoidalTimestepEmbedding(hidden_dim)
@@ -234,6 +248,16 @@ class TransformerVelocityNetwork(nn.Module):
             Predicted velocity (batch, N, 3).
         """
         pair_bias = self._compute_pair_bias(positions)
+
+        if self.use_chain_pe:
+            N = positions.shape[1]
+            idx = torch.arange(N, device=positions.device)
+            # |i - j| chain separation matrix  (N, N), clamped to embedding size
+            sep = (idx.unsqueeze(0) - idx.unsqueeze(1)).abs().clamp(max=255)
+            # (N, N, num_heads) → (1, num_heads, N, N) broadcast over batch
+            chain_bias = self.chain_pos_bias(sep).permute(2, 0, 1).unsqueeze(0)
+            pair_bias = pair_bias + chain_bias
+
         x = self.input_proj(positions)
         if atom_type_ids is not None:
             x = x + self.atom_type_embed(atom_type_ids).unsqueeze(0)

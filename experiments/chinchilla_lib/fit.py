@@ -65,12 +65,14 @@ def fit(args: argparse.Namespace) -> None:
                     continue
                 pt = traj["terminal"]
                 metric_val = pt.get(mkey)
-                D_seen = pt.get("D_seen")
+                # Use D_nominal (unique samples, epoch-independent) for scaling fit.
+                # Fall back to D_seen for runs written before max_steps was tracked.
+                D_nominal = pt.get("D_nominal") or pt.get("D_seen")
                 n_p = traj.get("n_params")
-                if metric_val is None or D_seen is None or n_p is None:
+                if metric_val is None or D_nominal is None or n_p is None:
                     continue
                 Ns.append(n_p)
-                Ds.append(D_seen)
+                Ds.append(D_nominal)
                 Ls.append(metric_val)
 
             if len(Ns) < 6:

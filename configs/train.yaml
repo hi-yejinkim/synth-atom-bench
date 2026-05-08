@@ -35,6 +35,7 @@ chinchilla:
   task_id: null       # e.g. sphere_easy, chain_N10, vsepr_sp3, sequence_linear
   trajectory_path: null  # path to trajectory.jsonl output
   size: null          # chinchilla size name (e.g. chinchilla_4)
+  D_nominal: null     # unique training samples (epoch-independent); prevents silent fallback to D_seen
 
 hydra:
   job:

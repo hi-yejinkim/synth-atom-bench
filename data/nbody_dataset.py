@@ -31,10 +31,27 @@ class NBodyDataset(Dataset):
         self.body = int(data["body"])
         self.T = float(data["T"])
         self.sigma = float(data["sigma"])
-        self.epsilon = float(data["epsilon"])
+        # nbody_chain datasets store epsilon under "epsilon_lj"; regular nbody uses "epsilon"
+        self.epsilon = float(data.get("epsilon", data.get("epsilon_lj", 1.0)))
         self.nu = float(data.get("nu", 1.0))
         self.mu = float(data.get("mu", 0.2))
         self.bc = str(data.get("boundary", "pbc"))
+
+        # Chain-specific params (present only in nbody_chain datasets)
+        self.is_chain = "k2" in data
+        if self.is_chain:
+            missing = [k for k in ("k2", "r0", "N") if k not in data]
+            if missing:
+                raise ValueError(
+                    f"nbody_chain dataset at {path} is missing required keys: {missing}"
+                )
+            self.n_atoms_chain = int(data["N"])
+            self.k2 = float(data["k2"])
+            self.r0 = float(data["r0"])
+            self.k3 = float(data.get("k3", 20.0))
+            self.theta0 = float(data.get("theta0", 1.911))
+            self.c1 = float(data.get("c1", 1.0))
+            self.c2 = float(data.get("c2", 0.5))
 
     def __len__(self) -> int:
         return len(self.positions)

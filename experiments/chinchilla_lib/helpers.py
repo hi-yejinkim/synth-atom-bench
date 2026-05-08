@@ -4,19 +4,67 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 from experiments.chinchilla_lib.config import (
-    BATCH_SIZE, D_STEPS, EVAL_EVERY, LR_NAMES, _GA_FALLBACK_N50,
+    BATCH_SIZE, D_STEPS, EVAL_EVERY, EVAL_N_SAMPLES, LR_NAMES, _GA_FALLBACK_N50,
 )
+
+
+def load_lower_bound(data_dir: str, metric: str = "W2_energy", n_eval: int = 10000) -> dict | None:
+    """Load precomputed lower bound for a dataset.
+
+    Looks for lower_bound.json in data_dir (written by chain_metric_lower_bound.py).
+    Returns {"mean": float, "std": float} or None if not found.
+
+    Args:
+        data_dir : path to the dataset directory (containing train.npz)
+        metric   : which metric key to load (e.g. "W2_E_total", "W2_bond_len")
+        n_eval   : evaluation sample count to look up (default 10000)
+    """
+    p = Path(data_dir) / "lower_bound.json"
+    if not p.exists():
+        return None
+    try:
+        payload = json.loads(p.read_text())
+        by_n = payload.get("by_n", {})
+        n_str = str(n_eval)
+        # fall back to nearest available n if exact match missing
+        if n_str not in by_n:
+            available = sorted(int(k) for k in by_n)
+            if not available:
+                return None
+            closest = min(available, key=lambda x: abs(x - n_eval))
+            n_str = str(closest)
+        entry = by_n[n_str].get(metric)
+        if entry is None:
+            return None
+        return {
+            **entry,                                      # mean, std
+            "ref_mode": payload.get("ref_mode", "?"),
+            "n_actual": int(n_str),                       # actual n used (may differ from n_eval)
+        }
+    except Exception:
+        return None
+
+
+def task_id_to_data_dir(task_id: str, base: str = "outputs/data") -> str:
+    """Derive the dataset directory path from a task_id.
+
+    Convention: task_id == directory name under outputs/data/.
+    e.g. "nbody_chain_N15_b4_T1.0" → "outputs/data/nbody_chain_N15_b4_T1.0"
+    """
+    return os.path.join(base, task_id)
 
 
 def _metric_key(task_id: str) -> str:
     """Return the trajectory.jsonl metric key for a given task.
 
     Most tasks use 'violation_rate' (bounded [0,1]).
-    N-body tasks use 'energy_w2' (Wasserstein-2 distance, unbounded positive).
+    N-body chain tasks use 'energy_w2' (W2 matches lower bound baseline).
+    Plain N-body tasks also use 'energy_w2' for consistency (both are logged).
     """
-    if task_id.startswith("nbody_"):
+    if task_id.startswith("nbody_"):  # covers both nbody_ and nbody_chain_
         return "energy_w2"
     return "violation_rate"
 
@@ -89,12 +137,15 @@ def _get_grad_accum(arch: str, size: str, n_atoms: int,
 
 
 def _measure_flops(arch: str, size: str, n_atoms: int, batch_size: int,
-                   aux_dist: bool = False) -> tuple[int, int]:
+                   aux_dist: bool = False, use_chain_pe: bool = False) -> tuple[int, int]:
     """Instantiate model, count params and FLOPs per step.
 
     Args:
         aux_dist: If True, add auxiliary pairwise distance loss FLOPs
             (two cdist calls + MSE on N×N matrices). Used for n-body tasks.
+        use_chain_pe: If True, instantiate transformer with chain positional
+            encoding enabled (nbody_chain tasks). Ensures param count in
+            grid_meta.json matches the actual trained model.
 
     Returns:
         (n_params, flops_per_step)
@@ -109,6 +160,8 @@ def _measure_flops(arch: str, size: str, n_atoms: int, batch_size: int,
 
     kwargs = dict(MODEL_DEFAULTS.get(arch, {}))
     kwargs.update(SIZE_PRESETS[arch][size])
+    if use_chain_pe and arch == "transformer":
+        kwargs["use_chain_pe"] = True
     model = MODEL_REGISTRY[arch](**kwargs)
     n_params = sum(p.numel() for p in model.parameters())
 

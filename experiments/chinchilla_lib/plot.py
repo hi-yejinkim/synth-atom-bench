@@ -32,8 +32,38 @@ from viz.style import ARCH_COLORS, ARCH_MARKERS, SINGLE_COL, DOUBLE_COL
 
 from experiments.chinchilla_lib.helpers import (
     _fits_approach1_path, _fits_path, _metric_key, _metric_is_bounded,
-    _results_path,
+    _results_path, load_lower_bound, task_id_to_data_dir, EVAL_N_SAMPLES,
 )
+
+
+def _add_lower_bound_line(ax: plt.Axes, task_id: str, n_eval: int | None = None) -> None:
+    """Add a horizontal dashed line for the W2 lower bound, if available.
+
+    Reads lower_bound.json from outputs/data/{task_id}/lower_bound.json.
+    Only draws for energy_w2 tasks (nbody_*).
+
+    Args:
+        n_eval: evaluation sample count. Defaults to EVAL_N_SAMPLES (chinchilla
+                trajectory eval count). Falls back to nearest available n in the JSON.
+    """
+    if not task_id.startswith("nbody_"):
+        return
+    if n_eval is None:
+        n_eval = EVAL_N_SAMPLES
+    data_dir = task_id_to_data_dir(task_id)
+    # nbody_chain: primary metric is W2_bond_len (structural, robust to LJ divergence)
+    # plain nbody: W2_energy (energy-based, safe for spherical LJ)
+    lb_metric = "W2_bond_len" if task_id.startswith("nbody_chain_") else "W2_energy"
+    lb = load_lower_bound(data_dir, metric=lb_metric, n_eval=n_eval)
+    if lb is None:
+        return
+    mean, std = lb["mean"], lb["std"]
+    n_actual = lb["n_actual"]
+    ref_mode = lb["ref_mode"]
+    label = f"lower bound ({ref_mode}, n={n_actual})"
+    ax.axhline(mean, color="black", linestyle="--", linewidth=1.2,
+               alpha=0.6, zorder=1, label=label)
+    ax.axhspan(max(mean - std, 1e-9), mean + std, color="black", alpha=0.06, zorder=0)
 
 
 # ── Constants ─────────────────────────────────────────────────────────────
@@ -198,6 +228,7 @@ def plot_isoflop_curves(
         ax.set_yscale("log")
         ax.set_xlabel("Model parameters N")
         ax.set_ylabel(_metric_label(task_id))
+        _add_lower_bound_line(ax, task_id)
         ax.legend(frameon=False, fontsize=8)
         figs[arch] = fig
 
@@ -258,6 +289,7 @@ def plot_training_trajectories(
         ax.set_yscale("log")
         ax.set_xlabel("Training samples seen (D)")
         ax.set_ylabel(_metric_label(task_id))
+        _add_lower_bound_line(ax, task_id)
 
         figs[arch] = fig
 
@@ -323,6 +355,7 @@ def plot_arch_comparison(
         ax.set_xlabel("N (params)", fontsize=8)
         ax.set_ylabel(_metric_label(task_id), fontsize=8)
         ax.tick_params(labelsize=7)
+        _add_lower_bound_line(ax, task_id)
         ax.legend(frameon=False, fontsize=7)
 
     for ax in axes[n_panels:]:
@@ -389,6 +422,7 @@ def plot_isoflop_envelope(
     ax.set_yscale("log")
     ax.set_xlabel("Total training FLOPs C")
     ax.set_ylabel(f"{_metric_label(task_id)} (lower = better)")
+    _add_lower_bound_line(ax, task_id)
     ax.legend(frameon=False, fontsize=9)
     fig.tight_layout()
     return fig
@@ -488,6 +522,7 @@ def plot_smooth_envelope(
     ax.set_yscale("log")
     ax.set_xlabel("Total training FLOPs C", fontsize=12)
     ax.set_ylabel(f"{_metric_label(task_id)} (lower = better)", fontsize=12)
+    _add_lower_bound_line(ax, task_id)
     ax.legend(frameon=False, fontsize=11, loc="lower left")
     ax.grid(True, which="major", alpha=0.3)
     ax.grid(True, which="minor", alpha=0.1)
@@ -769,12 +804,15 @@ def plot_N_D_regime_map(
         fig, ax = plt.subplots(figsize=SINGLE_COL)
         ax.set_title(f"{_arch_display(arch)} — {task_label}\nN-D Regime Map", fontsize=10)
 
+        bounded = _metric_is_bounded(task_id)
+        metric_label = _metric_label(task_id)
         vmin = max(VRs.min(), _VR_FLOOR)
-        vmax = VRs.max()
+        vmax = max(VRs.max(), vmin * 1.01)   # ensure vmax > vmin for LogNorm
+        use_log = bounded and vmax > vmin * 2
         sc = ax.scatter(Ns, Ds, c=VRs, cmap="RdYlGn_r",
-                        norm=LogNorm(vmin=vmin, vmax=vmax) if vmax > vmin * 2 else None,
+                        norm=LogNorm(vmin=vmin, vmax=vmax) if use_log else None,
                         s=50, edgecolors="white", linewidths=0.3, zorder=4)
-        fig.colorbar(sc, ax=ax, label="Violation rate", shrink=0.85)
+        fig.colorbar(sc, ax=ax, label=metric_label, shrink=0.85)
 
         # Chinchilla boundary: D = 6N (below → data-limited)
         N_line = np.geomspace(Ns.min() * 0.5, Ns.max() * 2, 100)
@@ -788,7 +826,8 @@ def plot_N_D_regime_map(
             D_grid = np.geomspace(Ds.min() * 0.5, Ds.max() * 2, 60)
             NN, DD = np.meshgrid(N_grid, D_grid)
             LL = E + A * np.power(NN, -alpha) + B * np.power(DD, -beta)
-            LL = np.clip(LL, _VR_FLOOR, 1.0)
+            if bounded:
+                LL = np.clip(LL, _VR_FLOOR, 1.0)
             ax.contour(NN, DD, LL, levels=6, colors="gray", linewidths=0.6, alpha=0.4)
 
         ax.set_xscale("log")
@@ -1286,6 +1325,13 @@ def _parse_T_from_task(task_id: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
+def _parse_body_from_task(task_id: str) -> int | None:
+    """Extract body order from task_id like nbody_chain_N15_b4_T1.0."""
+    import re
+    m = re.search(r"_b(\d+)_", task_id)
+    return int(m.group(1)) if m else None
+
+
 def _T_color(T: float, T_values: list[float]) -> str:
     """Return color for temperature value from a blue→red gradient."""
     if len(T_values) <= 1:
@@ -1524,6 +1570,168 @@ def plot_T_training_trajectories(
     return fig
 
 
+# ── T × body-order 2D comparison (nbody_chain tasks) ─────────────────────
+
+def plot_T_body_compute_frontier(
+    task_results: dict[str, dict],
+    arch: str,
+) -> plt.Figure:
+    """Compute-performance frontier: one line per (T, body) pair on shared axes.
+
+    Mirrors T_compute_frontier but adds body-order as a second grouping variable.
+    Line style encodes body (solid/dashed/dotted), color encodes T (coolwarm gradient).
+    Layout: one panel, all tasks overlaid for direct comparison.
+    """
+    _BODY_STYLES = {2: "-", 3: "--", 4: ":"}
+    _BODY_WIDTH  = {2: 2.0, 3: 1.8, 4: 2.2}
+
+    # Collect (C, metric) per (T, body)
+    data: dict[tuple[float, int], list[tuple[float, float]]] = {}
+    for task_id, results in task_results.items():
+        T = _parse_T_from_task(task_id)
+        body = _parse_body_from_task(task_id)
+        if T is None or body is None:
+            continue
+        mkey = _metric_key(task_id)
+        best = results.get("best_by_size_d", {})
+        for traj in best.values():
+            if traj["arch"] != arch:
+                continue
+            pt = traj.get("terminal", {})
+            fps = traj.get("flops_per_step", 0)
+            step = pt.get("step", 0)
+            val = pt.get(mkey)
+            if fps <= 0 or step <= 0 or val is None:
+                continue
+            key = (T, body)
+            data.setdefault(key, []).append((fps * step, max(float(val), _VR_FLOOR)))
+
+    if not data:
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+        return fig
+
+    T_values = sorted({T for T, _ in data})
+    body_values = sorted({b for _, b in data})
+    fig, ax = plt.subplots(figsize=(6.5, 4.5))
+    ax.set_title(f"{_arch_display(arch)} — Compute Frontier: T × Body Order", fontsize=11)
+
+    for (T, body), pts in sorted(data.items()):
+        pts_sorted = sorted(pts)
+        Cs  = np.array([p[0] for p in pts_sorted], dtype=float)
+        VRs = np.array([p[1] for p in pts_sorted], dtype=float)
+        color = _T_color(T, T_values)
+        ls    = _BODY_STYLES.get(body, "-")
+        lw    = _BODY_WIDTH.get(body, 2.0)
+        marker = _T_marker(T, T_values)
+
+        ax.scatter(Cs, VRs, color=color, alpha=0.3, s=16, zorder=2)
+        # Envelope (running min)
+        env_C, env_VR, running_min = [], [], float("inf")
+        for c, v in zip(Cs, VRs):
+            if v < running_min:
+                running_min = v
+                env_C.append(c)
+                env_VR.append(v)
+        if env_C:
+            ax.plot(env_C, env_VR, ls, color=color,
+                    label=f"T={T}, b={body}",
+                    linewidth=lw, marker=marker, markersize=5, zorder=4)
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("Total FLOPs (C)")
+    ax.set_ylabel("Energy W₂ distance")
+    # Two-level legend: color=T, linestyle=body
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles, labels, frameon=False, fontsize=7, ncol=max(1, len(body_values)),
+              title="T, body")
+    fig.tight_layout()
+    return fig
+
+
+def plot_T_body_isoflop_grid(
+    task_results: dict[str, dict],
+    arch: str,
+) -> plt.Figure:
+    """2D grid of IsoFLOP profiles: rows=temperature, cols=body order.
+
+    Each cell shows N (params) vs W2_energy for different D budgets.
+    Matches the style of the lower-bound image: T rows × body cols.
+    """
+    T_values    = sorted({_parse_T_from_task(tid) for tid in task_results
+                          if _parse_T_from_task(tid) is not None})
+    body_values = sorted({_parse_body_from_task(tid) for tid in task_results
+                          if _parse_body_from_task(tid) is not None})
+
+    if not T_values or not body_values:
+        fig, ax = plt.subplots(figsize=(5, 4))
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+        return fig
+
+    nrows, ncols = len(T_values), len(body_values)
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(4.5 * ncols, 3.5 * nrows),
+                             sharex=False, sharey=False)
+    if nrows == 1 and ncols == 1:
+        axes = np.array([[axes]])
+    elif nrows == 1:
+        axes = axes[np.newaxis, :]
+    elif ncols == 1:
+        axes = axes[:, np.newaxis]
+
+    fig.suptitle(f"{_arch_display(arch)} — IsoFLOP by T × Body Order", fontsize=12, y=1.01)
+
+    for ri, T in enumerate(T_values):
+        for ci, body in enumerate(body_values):
+            ax = axes[ri, ci]
+            # Find matching task
+            match = [tid for tid in task_results
+                     if _parse_T_from_task(tid) == T and _parse_body_from_task(tid) == body]
+            if not match:
+                ax.set_visible(False)
+                continue
+            task_id = match[0]
+            mkey = _metric_key(task_id)
+            best = task_results[task_id].get("best_by_size_d", {})
+
+            # Group by d_name
+            d_data: dict[str, list[tuple[int, float]]] = {}
+            for traj in best.values():
+                if traj["arch"] != arch:
+                    continue
+                d_name = traj.get("d_name", "?")
+                N = traj.get("n_params", 0)
+                val = traj.get("terminal", {}).get(mkey)
+                if N <= 0 or val is None:
+                    continue
+                d_data.setdefault(d_name, []).append((N, max(float(val), _VR_FLOOR)))
+
+            for i, d_name in enumerate(sorted(d_data)):
+                pts = sorted(d_data[d_name])
+                if len(pts) < 2:
+                    continue
+                Ns  = np.array([p[0] for p in pts], dtype=float)
+                VRs = np.array([p[1] for p in pts], dtype=float)
+                color = _D_COLORS[i % len(_D_COLORS)]
+                ax.plot(Ns, VRs, "o-", color=color, label=d_name,
+                        linewidth=1.8, markersize=4)
+
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            ax.set_title(f"T={T}, body={body}", fontsize=9)
+            if ci == 0:
+                ax.set_ylabel("Energy W₂", fontsize=8)
+            if ri == nrows - 1:
+                ax.set_xlabel("N (params)", fontsize=8)
+            ax.tick_params(labelsize=7)
+            if ri == 0 and ci == ncols - 1:
+                ax.legend(frameon=False, fontsize=6, title="D budget")
+
+    fig.tight_layout()
+    return fig
+
+
 def plot_T(args: argparse.Namespace) -> None:
     """Generate T-axis comparison figures for n-body tasks.
 
@@ -1598,3 +1806,16 @@ def plot_T(args: argparse.Namespace) -> None:
             fig = plot_T_arch_comparison(task_results, task_id)
             save_figure(fig, os.path.join(plots_dir, f"T_arch_comparison_{task_id}"))
             print(f"  T_arch_comparison_{task_id}")
+
+        # T × body 2D comparison grids (nbody_chain tasks)
+        chain_tasks = {tid: res for tid, res in task_results.items()
+                       if _parse_body_from_task(tid) is not None and _parse_T_from_task(tid) is not None}
+        if chain_tasks:
+            for arch in archs_ordered:
+                fig = plot_T_body_compute_frontier(chain_tasks, arch)
+                save_figure(fig, os.path.join(plots_dir, f"T_body_frontier_{arch}"))
+                print(f"  T_body_frontier_{arch}")
+
+                fig = plot_T_body_isoflop_grid(chain_tasks, arch)
+                save_figure(fig, os.path.join(plots_dir, f"T_body_isoflop_{arch}"))
+                print(f"  T_body_isoflop_{arch}")

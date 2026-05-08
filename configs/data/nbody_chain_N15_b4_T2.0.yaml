@@ -1,0 +1,5 @@
+data_dir: outputs/data/nbody_chain_N15_b4_T2.0
+n_atoms: 15
+body: 4
+T: 2.0
+nbody_chain: true

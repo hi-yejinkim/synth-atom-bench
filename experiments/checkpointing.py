@@ -23,6 +23,7 @@ class CheckpointState:
     best_bond_violation_rate: float = float("inf")
     best_nonbonded_clash_rate: float = float("inf")
     best_energy_w1: float = float("inf")
+    best_energy_w2: float = float("inf")
 
 
 def save_checkpoint(state: CheckpointState, path: str | Path) -> None:
@@ -40,6 +41,7 @@ def save_checkpoint(state: CheckpointState, path: str | Path) -> None:
                 "best_bond_violation_rate": state.best_bond_violation_rate,
                 "best_nonbonded_clash_rate": state.best_nonbonded_clash_rate,
                 "best_energy_w1": state.best_energy_w1,
+                "best_energy_w2": state.best_energy_w2,
                 "model_state_dict": state.model_state_dict,
                 "optimizer_state_dict": state.optimizer_state_dict,
                 "config": state.config,
@@ -73,6 +75,7 @@ def load_checkpoint(path: str | Path, device: str = "cpu") -> CheckpointState:
         best_bond_violation_rate=data.get("best_bond_violation_rate", float("inf")),
         best_nonbonded_clash_rate=data.get("best_nonbonded_clash_rate", float("inf")),
         best_energy_w1=data.get("best_energy_w1", float("inf")),
+        best_energy_w2=data.get("best_energy_w2", float("inf")),
     )
 
 
@@ -87,6 +90,7 @@ class CheckpointManager:
         self._best_bond_violation_rate = float("inf")
         self._best_nonbonded_clash_rate = float("inf")
         self._best_energy_w1 = float("inf")
+        self._best_energy_w2 = float("inf")
         self._primary_metric = primary_metric
         # Restore best from existing checkpoint if present
         best_path = self._dir / "best.pt"
@@ -97,6 +101,7 @@ class CheckpointManager:
             self._best_bond_violation_rate = state.best_bond_violation_rate
             self._best_nonbonded_clash_rate = state.best_nonbonded_clash_rate
             self._best_energy_w1 = state.best_energy_w1
+            self._best_energy_w2 = state.best_energy_w2
 
     @property
     def best_clash_rate(self) -> float:
@@ -118,6 +123,10 @@ class CheckpointManager:
     def best_energy_w1(self) -> float:
         return self._best_energy_w1
 
+    @property
+    def best_energy_w2(self) -> float:
+        return self._best_energy_w2
+
     def save(
         self,
         model: torch.nn.Module,
@@ -130,6 +139,7 @@ class CheckpointManager:
         bond_violation_rate: float = float("inf"),
         nonbonded_clash_rate: float = float("inf"),
         energy_w1: float = float("inf"),
+        energy_w2: float = float("inf"),
         **kwargs,
     ) -> None:
         best_cr = min(clash_rate, self._best_clash_rate)
@@ -137,6 +147,7 @@ class CheckpointManager:
         best_bvr = min(bond_violation_rate, self._best_bond_violation_rate)
         best_ncr = min(nonbonded_clash_rate, self._best_nonbonded_clash_rate)
         best_ew1 = min(energy_w1, self._best_energy_w1)
+        best_ew2 = min(energy_w2, self._best_energy_w2)
         state = CheckpointState(
             epoch=epoch,
             step=step,
@@ -145,6 +156,7 @@ class CheckpointManager:
             best_bond_violation_rate=best_bvr,
             best_nonbonded_clash_rate=best_ncr,
             best_energy_w1=best_ew1,
+            best_energy_w2=best_ew2,
             model_state_dict=model.state_dict(),
             optimizer_state_dict=optimizer.state_dict(),
             config=config,
@@ -152,7 +164,10 @@ class CheckpointManager:
         # Always save latest
         save_checkpoint(state, self._dir / "latest.pt")
         # Save best based on primary metric
-        if self._primary_metric == "energy_w1":
+        if self._primary_metric == "energy_w2":
+            if energy_w2 < self._best_energy_w2:
+                save_checkpoint(state, self._dir / "best.pt")
+        elif self._primary_metric == "energy_w1":
             if energy_w1 < self._best_energy_w1:
                 save_checkpoint(state, self._dir / "best.pt")
         else:
@@ -164,6 +179,7 @@ class CheckpointManager:
         self._best_bond_violation_rate = best_bvr
         self._best_nonbonded_clash_rate = best_ncr
         self._best_energy_w1 = best_ew1
+        self._best_energy_w2 = best_ew2
 
     def load_latest(self, device: str = "cpu") -> CheckpointState | None:
         path = self._dir / "latest.pt"

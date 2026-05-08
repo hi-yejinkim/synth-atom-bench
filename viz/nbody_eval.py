@@ -62,14 +62,49 @@ def _label(d: dict, path: str) -> str:
     return ", ".join(parts) if parts else Path(path).stem
 
 
+def _is_nbody_chain(ref_data: dict) -> bool:
+    """True if reference data is an n-body chain (has bonded chain potential)."""
+    return "k2" in ref_data
+
+
+def _compute_chain_energies(positions: np.ndarray, ref_data: dict) -> np.ndarray:
+    """Compute chain potential energies; clips to ref_mean + 20σ to avoid LJ divergence."""
+    from data.generate_nbody_chain import ChainParams, total_energy as chain_total_energy
+    N = positions.shape[1]
+    params = ChainParams(
+        body=int(ref_data["body"]),
+        N=N,
+        k2=float(ref_data["k2"]),
+        r0=float(ref_data["r0"]),
+        sigma=float(ref_data["sigma"]),
+        epsilon_lj=float(ref_data.get("epsilon_lj", 1.0)),
+        k3=float(ref_data.get("k3", 20.0)),
+        theta0=float(ref_data.get("theta0", 1.911)),
+        c1=float(ref_data.get("c1", 1.0)),
+        c2=float(ref_data.get("c2", 0.5)),
+        box_size=float(ref_data["box_size"]),
+    )
+    ref_e = ref_data["energies"].astype(np.float64)
+    e_clip_hi = float(ref_e.mean()) + 20.0 * float(ref_e.std())
+    energies = np.array(
+        [chain_total_energy(positions[i].astype(np.float64), params)[0]
+         for i in range(len(positions))],
+        dtype=np.float64,
+    )
+    return np.clip(energies, None, e_clip_hi)
+
+
 def _compute_energies(positions: np.ndarray, ref_data: dict,
                       bc_override: str | None = None) -> np.ndarray:
     """Compute total energies from positions using n-body potential.
 
+    For nbody_chain data (ref_data has 'k2'), uses chain potential.
     Args:
         bc_override: if set, overrides the boundary condition from ref_data.
                      Use 'hard_wall' for open-boundary evaluation.
     """
+    if _is_nbody_chain(ref_data):
+        return _compute_chain_energies(positions, ref_data)
     from data.generate_nbody import PotentialParams, total_energy
     bc = bc_override if bc_override else str(ref_data.get("boundary", "pbc"))
     params = PotentialParams(

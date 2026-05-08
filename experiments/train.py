@@ -45,6 +45,7 @@ from metrics.gr_distance import gr_distance
 from metrics.wasserstein_distance import energy_w2_batched
 from experiments.model_registry import MODEL_REGISTRY, SIZE_PRESETS
 from experiments.task_registry import get_violation_rate, infer_task_id
+from metrics.wasserstein_distance import _w1_1d
 
 
 def is_chain_config(cfg: DictConfig) -> bool:
@@ -76,11 +77,26 @@ def is_nbody_config(cfg: DictConfig) -> bool:
     return hasattr(cfg.data, "nbody") and cfg.data.nbody
 
 
+def is_nbody_chain_config(cfg: DictConfig) -> bool:
+    """Check if config describes an n-body chain energy distribution task."""
+    return hasattr(cfg.data, "nbody_chain") and cfg.data.nbody_chain
+
+
+def _any_nbody(cfg: DictConfig) -> bool:
+    """True for any energy-distribution task (nbody or nbody_chain)."""
+    return is_nbody_config(cfg) or is_nbody_chain_config(cfg)
+
+
+def _primary_energy_key(cfg: DictConfig) -> str:
+    """Primary energy metric: W2 for nbody_chain (matches lower bound), W1 for nbody."""
+    return "energy_w2" if is_nbody_chain_config(cfg) else "energy_w1"
+
+
 def load_dataset(cfg: DictConfig, path: str, max_samples: int | None = None):
     """Load the appropriate dataset class based on config."""
     if is_unified_config(cfg):
         return UnifiedDataset(path, max_samples=max_samples)
-    if is_nbody_config(cfg):
+    if is_nbody_chain_config(cfg) or is_nbody_config(cfg):
         return NBodyDataset(path, max_samples=max_samples)
     if is_vsepr_config(cfg):
         return VSEPRDataset(path, max_samples=max_samples)
@@ -136,6 +152,9 @@ def build_model(cfg: DictConfig, box_size: float) -> nn.Module:
     cutoff_key = "cutoff"
     if cutoff_key in kwargs:
         kwargs[cutoff_key] = box_size * 1.5
+    # Chain tasks: enable sequential position bias so the model knows atom order
+    if arch == "transformer" and is_nbody_chain_config(cfg):
+        kwargs["use_chain_pe"] = True
     return MODEL_REGISTRY[arch](**kwargs)
 
 
@@ -208,8 +227,92 @@ def evaluate(
 
     result = {"clash_rate": cr, "gr_distance": grd, "samples": samples}
 
-    # n-body energy W1/W2 metrics
-    if is_nbody_config(cfg):
+    # n-body chain structural W2 metrics.
+    # Potentials active per body order:
+    #   body=2: bond-spring + LJ(non-bonded)
+    #   body=3: + angle
+    #   body=4: + dihedral
+    # We measure W2 on the structural distributions that correspond to each
+    # potential term.  Raw energy W2 is avoided: the (σ/r)^12 LJ term diverges
+    # for non-bonded atom clashes, inflating W2 to 10^28 in early training.
+    if is_nbody_chain_config(cfg):
+        from metrics.wasserstein_distance import _w2_1d
+
+        pos_np = samples.numpy()             # (n_eval, N, 3) — shifted to [0, box_size]
+        ref_pos = dataset.positions.numpy()  # (N_train, N, 3) — shifted to [-box/2, +box/2]
+        # Cap reference to 50 K for speed; structural W2 is stable at this scale
+        if len(ref_pos) > 50_000:
+            rng_ref = np.random.default_rng(0).choice(len(ref_pos), 50_000, replace=False)
+            ref_pos = ref_pos[rng_ref]
+
+        # --- body ≥ 2: bond-length W2 (structural diagnostic) ---
+        gen_bl = np.linalg.norm(pos_np[:, 1:] - pos_np[:, :-1], axis=-1).ravel().astype(np.float64)
+        ref_bl = np.linalg.norm(ref_pos[:, 1:] - ref_pos[:, :-1], axis=-1).ravel().astype(np.float64)
+        w2_bl = _w2_1d(gen_bl, ref_bl)
+        result["W2_bond_len"] = w2_bl
+        result["ref_energy_std"] = float(dataset.energies.std())
+
+        # --- body ≥ 3: bond-angle W2 (captures angle term) ---
+        if dataset.body >= 3:
+            def _bond_angles(pos: np.ndarray) -> np.ndarray:
+                v1 = pos[:, :-2] - pos[:, 1:-1]
+                v2 = pos[:, 2:]  - pos[:, 1:-1]
+                cos = (v1 * v2).sum(-1) / (
+                    np.linalg.norm(v1, axis=-1) * np.linalg.norm(v2, axis=-1) + 1e-12
+                )
+                return np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))).ravel()
+            result["W2_bond_angle"] = _w2_1d(
+                _bond_angles(pos_np).astype(np.float64),
+                _bond_angles(ref_pos).astype(np.float64),
+            )
+
+        # --- body ≥ 4: dihedral W2 (captures dihedral term) ---
+        if dataset.body >= 4:
+            def _dihedral_angles(pos: np.ndarray) -> np.ndarray:
+                p0, p1, p2, p3 = pos[:, :-3], pos[:, 1:-2], pos[:, 2:-1], pos[:, 3:]
+                b0 = p1 - p0; b1 = p2 - p1; b2 = p3 - p2
+                n1 = np.cross(b0, b1)
+                n2 = np.cross(b1, b2)
+                n1 = n1 / (np.linalg.norm(n1, axis=-1, keepdims=True) + 1e-12)
+                n2 = n2 / (np.linalg.norm(n2, axis=-1, keepdims=True) + 1e-12)
+                cos = np.clip((n1 * n2).sum(-1), -1.0, 1.0)
+                b1u = b1 / (np.linalg.norm(b1, axis=-1, keepdims=True) + 1e-12)
+                sin = (np.cross(n1, n2) * b1u).sum(-1)
+                return np.degrees(np.arctan2(sin, cos)).ravel()
+            result["W2_dihedral"] = _w2_1d(
+                _dihedral_angles(pos_np).astype(np.float64),
+                _dihedral_angles(ref_pos).astype(np.float64),
+            )
+
+        # --- Full chain energy W2 (primary Chinchilla metric) ---
+        # float64 + clamp to ref_mean+20σ prevents LJ (σ/r)^12 overflow for
+        # clashing structures. Covers all active terms: bond + LJ_nb + angle + dihedral.
+        from data.generate_nbody_chain import ChainParams, total_energy as chain_total_energy
+        chain_params = ChainParams(
+            body=dataset.body,
+            N=dataset.n_atoms_chain,
+            k2=dataset.k2, r0=dataset.r0,
+            sigma=dataset.sigma, epsilon_lj=dataset.epsilon,
+            k3=dataset.k3, theta0=dataset.theta0,
+            c1=dataset.c1, c2=dataset.c2,
+            box_size=dataset.box_size,
+        )
+        ref_e = dataset.energies.numpy().astype(np.float64)
+        ref_e_mean, ref_e_std = float(ref_e.mean()), float(ref_e.std())
+        e_clip_hi = ref_e_mean + 20.0 * ref_e_std
+        gen_e_f64 = np.array(
+            [chain_total_energy(pos_np[i], chain_params)[0] for i in range(len(pos_np))],
+            dtype=np.float64,
+        )
+        gen_e_clipped = np.clip(gen_e_f64, None, e_clip_hi)
+        ref_e_clipped = np.clip(ref_e, None, e_clip_hi)
+        result["chain_energy_w2"] = _w2_1d(gen_e_clipped, ref_e_clipped)
+        result["chain_energy_w1"] = _w1_1d(gen_e_clipped, ref_e_clipped)
+        result["energy_w2"] = result["chain_energy_w2"]
+        result["energy_w1"] = result["chain_energy_w1"]
+
+    # n-body energy W1/W2 metrics (spherical LJ potential)
+    elif is_nbody_config(cfg):
         from metrics.wasserstein_distance import energy_w2_from_positions
         wd = energy_w2_from_positions(
             samples.numpy(),
@@ -299,9 +402,13 @@ def main(cfg: DictConfig) -> None:
     _chinchilla_cfg = cfg.get("chinchilla", None)
     _traj_file = None
     _traj_task_id = None
+    _traj_D_nominal: int | None = None
     if _chinchilla_cfg and _chinchilla_cfg.get("enabled", False):
         _traj_task_id = _chinchilla_cfg.get("task_id") or None
         _traj_path = _chinchilla_cfg.get("trajectory_path") or None
+        _traj_D_nominal = _chinchilla_cfg.get("D_nominal") or None
+        if _traj_D_nominal is not None:
+            _traj_D_nominal = int(_traj_D_nominal)
         if _traj_path:
             import json as _json
             os.makedirs(os.path.dirname(_traj_path), exist_ok=True)
@@ -409,7 +516,7 @@ def main(cfg: DictConfig) -> None:
 
     # Checkpoint dir
     checkpoint_dir = cfg.checkpoint.get("dir") or os.path.join("outputs", "checkpoints", cfg.model.arch)
-    primary_metric = "energy_w1" if is_nbody_config(cfg) else "gr_distance"
+    primary_metric = _primary_energy_key(cfg) if _any_nbody(cfg) else "gr_distance"
     ckpt_mgr = CheckpointManager(checkpoint_dir, primary_metric=primary_metric)
 
     # Resume from checkpoint if available
@@ -441,6 +548,8 @@ def main(cfg: DictConfig) -> None:
         run_name = f"{cfg.model.arch}_N{n_atoms}_vsepr_{cfg.data.orbital_type}"
     elif is_sequence_config(cfg):
         run_name = f"{cfg.model.arch}_N{n_atoms}_seq_{cfg.data.polymer_type}"
+    elif is_nbody_chain_config(cfg):
+        run_name = f"{cfg.model.arch}_N{n_atoms}_nbody_chain_b{cfg.data.body}_T{cfg.data.T}"
     elif is_chain_config(cfg):
         run_name = f"{cfg.model.arch}_N{n_atoms}_chain"
     elif is_nbody_config(cfg):
@@ -455,7 +564,7 @@ def main(cfg: DictConfig) -> None:
     tracker = ComputeTracker()
 
     # N-body loss enhancements: SNR weighting + auxiliary pairwise distance loss
-    _nbody_loss = is_nbody_config(cfg)
+    _nbody_loss = _any_nbody(cfg)
     _aux_dist_w = 0.3 if _nbody_loss else 0.0
     if _nbody_loss:
         print("N-body loss: SNR weighting + auxiliary distance loss (0.3)")
@@ -530,12 +639,20 @@ def main(cfg: DictConfig) -> None:
                 import json as _json
                 try:
                     vr = get_violation_rate(ev, _traj_task_id)
-                except (KeyError, Exception):
+                except Exception as _e:
+                    # Fail loudly for KeyError — a missing metric key means the wrong
+                    # metric would be silently substituted, corrupting the scaling fit.
+                    if isinstance(_e, KeyError):
+                        raise
                     vr = float(cr)
                 traj_record = {
                     "step": step,
+                    "max_steps": cfg.train.max_steps,
                     "total_flops": float(total_flops),
                     "D_seen": int(step * effective_batch_size),
+                    # D_nominal = intended unique training samples (epoch-independent).
+                    # Use this for scaling fits; D_seen inflates when epochs > 1.
+                    "D_nominal": _traj_D_nominal if _traj_D_nominal is not None else int(step * effective_batch_size),
                     "violation_rate": float(vr),
                     "n_params": n_params,
                     "lr": float(scheduler.get_last_lr()[0]),
@@ -550,6 +667,8 @@ def main(cfg: DictConfig) -> None:
                             "pi_planarity_violation_rate", "contact_recall",
                             "periodicity_violation_rate",
                             "energy_w1", "energy_w2", "ref_energy_std",
+                            "W2_bond_len", "W2_bond_angle", "W2_dihedral",
+                            "chain_energy_w1", "chain_energy_w2",
                             "gr_distance"]:
                     if rk in ev:
                         traj_record[rk] = float(ev[rk])
@@ -582,7 +701,7 @@ def main(cfg: DictConfig) -> None:
                 if "rg_error" in ev:
                     log_metrics["eval/rg_error"] = ev["rg_error"]
                     ckpt_kwargs["rg_error"] = ev["rg_error"]
-            if is_nbody_config(cfg) and "energy_w2" in ev:
+            if _any_nbody(cfg) and "energy_w2" in ev:
                 log_metrics["eval/energy_w1"] = ev["energy_w1"]
                 log_metrics["eval/energy_w2"] = ev["energy_w2"]
                 ckpt_kwargs["energy_w1"] = ev["energy_w1"]
@@ -608,12 +727,16 @@ def main(cfg: DictConfig) -> None:
                 msg += f" | angle JSD: {ev['angle_jsd']:.4f} | in-peak: {ev['bond_length_in_peak_ratio']:.4f}"
             if is_sequence_config(cfg):
                 msg += f" | contact recall: {ev['contact_recall']:.4f} | bond viol: {ev['seq_bond_violation_rate']:.4f}"
-            if is_nbody_config(cfg) and "energy_w1" in ev:
+            if _any_nbody(cfg) and "energy_w1" in ev:
+                e_label = "W2" if is_nbody_chain_config(cfg) else "W1"
+                best_e_attr = "best_energy_w2" if is_nbody_chain_config(cfg) else "best_energy_w1"
                 msg += f" | energy W1: {ev['energy_w1']:.4f} W2: {ev['energy_w2']:.4f}"
-            if is_unified_config(cfg):
+                if is_nbody_chain_config(cfg) and "W2_bond_len" in ev:
+                    msg += f" | W2_bond: {ev['W2_bond_len']:.4f}"
+                msg += f" | Best E-{e_label}: {getattr(ckpt_mgr, best_e_attr):.4f}"
+            elif is_unified_config(cfg):
                 msg += f" | violation: {ev.get('violation_rate', 0.0):.4f}"
-            if is_nbody_config(cfg):
-                msg += f" | Best E-W1: {ckpt_mgr.best_energy_w1:.4f}"
+                msg += f" | Best g(r): {ckpt_mgr.best_gr_distance:.4f}"
             else:
                 msg += f" | Best g(r): {ckpt_mgr.best_gr_distance:.4f}"
             print(msg)
@@ -645,7 +768,7 @@ def main(cfg: DictConfig) -> None:
         ckpt_kwargs["seq_bond_violation_rate"] = ev["seq_bond_violation_rate"]
         if "rg_error" in ev:
             ckpt_kwargs["rg_error"] = ev["rg_error"]
-    if is_nbody_config(cfg) and "energy_w1" in ev:
+    if _any_nbody(cfg) and "energy_w1" in ev:
         ckpt_kwargs["energy_w1"] = ev["energy_w1"]
         ckpt_kwargs["energy_w2"] = ev["energy_w2"]
     if is_unified_config(cfg):
@@ -667,11 +790,50 @@ def main(cfg: DictConfig) -> None:
         msg += f" | contact recall: {ev['contact_recall']:.4f} | bond viol: {ev['seq_bond_violation_rate']:.4f}"
     if is_unified_config(cfg):
         msg += f" | violation: {ev.get('violation_rate', 0.0):.4f}"
-    if is_nbody_config(cfg):
-        msg += f" | Best E-W1: {ckpt_mgr.best_energy_w1:.4f}"
+    if _any_nbody(cfg):
+        e_label = "W2" if is_nbody_chain_config(cfg) else "W1"
+        best_e_attr = "best_energy_w2" if is_nbody_chain_config(cfg) else "best_energy_w1"
+        msg += f" | Best E-{e_label}: {getattr(ckpt_mgr, best_e_attr):.4f}"
     else:
         msg += f" | Best g(r): {ckpt_mgr.best_gr_distance:.4f}"
     print(msg)
+
+    # Write final eval to trajectory if this step wasn't already logged periodically
+    # (happens when max_steps is not a multiple of eval.every_n_steps)
+    if (_traj_file is not None and _traj_task_id is not None
+            and step % cfg.eval.every_n_steps != 0):
+        import json as _json
+        try:
+            vr_final = get_violation_rate(ev, _traj_task_id)
+        except Exception:
+            vr_final = float(ev.get("clash_rate", 1.0))
+        final_record = {
+            "step": step,
+            "max_steps": cfg.train.max_steps,
+            "total_flops": float(flops_per_step * step),
+            "D_seen": int(step * effective_batch_size),
+            "D_nominal": _traj_D_nominal if _traj_D_nominal is not None else int(step * effective_batch_size),
+            "violation_rate": float(vr_final),
+            "n_params": n_params,
+            "lr": float(scheduler.get_last_lr()[0]),
+            "task": _traj_task_id,
+            "arch": cfg.model.arch,
+            "size": cfg.model.get("size", "unknown"),
+        }
+        for rk in ["clash_violation_rate", "slot_violation_rate",
+                    "bond_angle_violation_rate",
+                    "bb_bond_length_violation_rate", "sc_bond_length_violation_rate",
+                    "pi_planarity_violation_rate", "contact_recall",
+                    "periodicity_violation_rate",
+                    "energy_w1", "energy_w2", "ref_energy_std",
+                    "W2_bond_len", "W2_bond_angle", "W2_dihedral",
+                    "chain_energy_w1", "chain_energy_w2",
+                    "gr_distance"]:
+            if rk in ev:
+                final_record[rk] = float(ev[rk])
+        # Only write if this step differs from the last periodic log
+        _traj_file.write(_json.dumps(final_record) + "\n")
+        _traj_file.flush()
 
     if _traj_file is not None:
         _traj_file.close()

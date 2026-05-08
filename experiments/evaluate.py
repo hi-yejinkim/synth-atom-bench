@@ -11,6 +11,7 @@ from data.chain_dataset import ChainDataset
 from data.dataset import HardSphereDataset
 from experiments.checkpointing import load_checkpoint
 from flow_matching.sampling import sample_batched
+from experiments.chinchilla_lib.helpers import load_lower_bound
 from metrics.bond_violation import bond_violation_rate_batched, nonbonded_clash_rate_batched
 from metrics.clash_rate import clash_rate_batched
 from metrics.gr_distance import gr_distance
@@ -26,14 +27,23 @@ MODEL_REGISTRY = {
 }
 
 
-def build_model_from_config(config: dict, box_size: float) -> torch.nn.Module:
-    """Reconstruct model from saved config dict."""
+def build_model_from_config(config: dict, box_size: float,
+                            state_dict: dict | None = None) -> torch.nn.Module:
+    """Reconstruct model from saved config dict.
+
+    If state_dict is provided, auto-detects flags like use_chain_pe that may
+    have been added after the config was originally saved.
+    """
     arch = config["model"]["arch"]
     if arch not in MODEL_REGISTRY:
         raise ValueError(f"Unknown architecture: {arch}. Available: {list(MODEL_REGISTRY.keys())}")
     kwargs = dict(config["model"]["model_kwargs"])
     if "cutoff" in kwargs:
         kwargs["cutoff"] = box_size * 1.5
+    # Auto-detect chain positional encoding from state_dict keys
+    if state_dict is not None and "use_chain_pe" not in kwargs:
+        if any("chain_pos_bias" in k for k in state_dict):
+            kwargs["use_chain_pe"] = True
     return MODEL_REGISTRY[arch](**kwargs)
 
 
@@ -60,8 +70,11 @@ def main():
     # Load dataset for metadata (auto-detect: nbody vs chain vs hard-sphere)
     train_path = os.path.join(args.data, "train.npz")
     npz = np.load(train_path, allow_pickle=True)
-    is_nbody = "energies_2body" in npz.files and "body" in npz.files
+    #is_nbody = "energies_2body" in npz.files and "body" in npz.files
+    is_nbody = "energies" in npz.files and "body" in npz.files
     is_chain = "bond_length" in npz.files
+
+    is_nbody_chain = is_nbody and "k2" in npz.files
 
     if is_nbody:
         ref_positions = npz["positions"]
@@ -69,18 +82,35 @@ def main():
         n_atoms = ref_positions.shape[1]
         box_size = float(npz["box_size"])
         radius = float(npz["sigma"]) / 2.0  # clash radius = σ/2
-        nbody_params = {
-            "body": int(npz["body"]),
-            "sigma": float(npz["sigma"]),
-            "epsilon": float(npz["epsilon"]),
-            "nu": float(npz.get("nu", 1.0)),
-            "mu": float(npz.get("mu", 0.2)),
-            "box_size": box_size,
-            "bc": str(npz.get("boundary", "pbc")),
-        }
+        if is_nbody_chain:
+            chain_params_dict = {
+                "body": int(npz["body"]),
+                "N": int(npz["N"]),
+                "k2": float(npz["k2"]),
+                "r0": float(npz["r0"]),
+                "sigma": float(npz["sigma"]),
+                "epsilon_lj": float(npz["epsilon_lj"]),
+                "k3": float(npz.get("k3", 20.0)),
+                "theta0": float(npz.get("theta0", 1.911)),
+                "c1": float(npz.get("c1", 1.0)),
+                "c2": float(npz.get("c2", 0.5)),
+                "box_size": box_size,
+            }
+            print(f"Data: n-body chain (body={chain_params_dict['body']}), N={n_atoms}, "
+                  f"T={float(npz['T'])}, box_size={box_size:.3f}")
+        else:
+            nbody_params = {
+                "body": int(npz["body"]),
+                "sigma": float(npz["sigma"]),
+                "epsilon": float(npz["epsilon"]),
+                "nu": float(npz.get("nu", 1.0)),
+                "mu": float(npz.get("mu", 0.2)),
+                "box_size": box_size,
+                "bc": str(npz.get("boundary", "pbc")),
+            }
+            print(f"Data: n-body (body={nbody_params['body']}), N={n_atoms}, "
+                  f"T={float(npz['T'])}, box_size={box_size:.3f}, bc={nbody_params['bc']}")
         ref_energy_std = float(np.std(ref_energies))
-        print(f"Data: n-body (body={nbody_params['body']}), N={n_atoms}, "
-              f"T={float(npz['T'])}, box_size={box_size:.3f}, bc={nbody_params['bc']}")
         npz.close()
     elif is_chain:
         npz.close()
@@ -98,7 +128,7 @@ def main():
         n_atoms = dataset.positions.shape[1]
 
     # Build and load model
-    model = build_model_from_config(config, box_size).to(device)
+    model = build_model_from_config(config, box_size, state.model_state_dict).to(device)
     model.load_state_dict(state.model_state_dict)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_params:,}")
@@ -125,12 +155,30 @@ def main():
     w2 = None
     if is_nbody:
         print("Computing energy Wasserstein distance...")
-        wd = energy_w2_from_positions(
-            samples.numpy(), ref_energies,
-            **nbody_params,
-        )
-        w1 = wd["w1_total"]
-        w2 = wd["w2_total"]
+        if is_nbody_chain:
+            from data.generate_nbody_chain import ChainParams, total_energy as chain_total_energy
+            from metrics.wasserstein_distance import _w2_1d, _w1_1d
+            chain_params = ChainParams(**{k: v for k, v in chain_params_dict.items() if k != "N"},
+                                       N=chain_params_dict["N"])
+            ref_e_f64 = ref_energies.astype(np.float64)
+            e_clip_hi = float(ref_e_f64.mean()) + 20.0 * float(ref_e_f64.std())
+            pos_np = samples.numpy()
+            gen_e_f64 = np.array(
+                [chain_total_energy(pos_np[i].astype(np.float64), chain_params)[0]
+                 for i in range(len(pos_np))],
+                dtype=np.float64,
+            )
+            gen_e_clipped = np.clip(gen_e_f64, None, e_clip_hi)
+            ref_e_clipped = np.clip(ref_e_f64, None, e_clip_hi)
+            w2 = float(_w2_1d(gen_e_clipped, ref_e_clipped))
+            w1 = float(_w1_1d(gen_e_clipped, ref_e_clipped))
+        else:
+            wd = energy_w2_from_positions(
+                samples.numpy(), ref_energies,
+                **nbody_params,
+            )
+            w1 = wd["w1_total"]
+            w2 = wd["w2_total"]
 
     # Ground truth g(r) for distance metric
     from data.validate import pair_correlation
@@ -145,13 +193,20 @@ def main():
         bvr = bond_violation_rate_batched(samples, dataset.bond_length)
         ncr = nonbonded_clash_rate_batched(samples, dataset.radius)
 
+    # Load lower bound for comparison (if available)
+    lb = load_lower_bound(args.data, metric="W2_energy", n_eval=args.n_samples) if w2 is not None else None
+
     print(f"\nResults:")
     print(f"  Samples generated: {args.n_samples}")
     print(f"  Clash rate:        {cr:.4f}")
     print(f"  g(r) distance:     {grd:.4f}")
     if w1 is not None:
         print(f"  Energy W1:         {w1:.4f}")
-        print(f"  Energy W2:         {w2:.4f}")
+        if lb is not None:
+            ratio = w2 / lb["mean"] if lb["mean"] > 0 else float("inf")
+            print(f"  Energy W2:         {w2:.4f}  (lower bound [{lb['ref_mode']}, n={lb['n_actual']}]: {lb['mean']:.4f}±{lb['std']:.4f}, ratio: {ratio:.2f}x)")
+        else:
+            print(f"  Energy W2:         {w2:.4f}")
     if is_chain:
         print(f"  Bond violation:    {bvr:.4f}")
         print(f"  Non-bonded clash:  {ncr:.4f}")

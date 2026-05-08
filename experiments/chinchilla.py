@@ -152,6 +152,14 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     p_gen.add_argument(
+        "--eval_n_samples", type=int, default=1000,
+        help=(
+            "Number of samples generated per eval step. "
+            "Use 5000 for nbody_chain tasks (W2 lower bound ≈ 0.07-0.25 at n=5000). "
+            "Default: 1000."
+        ),
+    )
+    p_gen.add_argument(
         "--epochs", type=int, default=1,
         help=(
             "Number of passes over each D-budget dataset. "
@@ -174,6 +182,21 @@ def _make_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--epochs", type=int, default=1,
         help="Number of passes over each D-budget (must match the generate call).",
+    )
+    p_run.add_argument(
+        "--eval_n_samples", type=int, default=1000,
+        help=(
+            "Number of samples generated per eval step. "
+            "Use 5000 for nbody_chain tasks (lower bound ≈ 0.07-0.25 at n=5000). "
+            "Default: 1000."
+        ),
+    )
+    p_run.add_argument(
+        "--lr_warmup", action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "Two-phase LR search: run all LRs for D1, then pick best LR for D2+. "
+            "Saves (n_lrs-1)×(n_D-1) runs. Disable with --no-lr_warmup. Default: True."
+        ),
     )
     p_run.set_defaults(func=run)
 

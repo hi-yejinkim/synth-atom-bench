@@ -240,6 +240,28 @@ TASK_REGISTRY: dict[str, TaskSpec] = {
 }
 
 
+def _register_nbody_chain_task(task_id: str) -> TaskSpec:
+    """Dynamically create TaskSpec from nbody_chain task_id pattern.
+
+    Supported pattern:
+        nbody_chain_N{N}_b{body}_T{T}
+    """
+    import re
+    m = re.match(r"nbody_chain_N(\d+)_b(\d+)_T([\d.]+)", task_id)
+    if not m:
+        raise KeyError(f"Cannot parse nbody_chain task_id: {task_id}")
+    n, body, T = int(m.group(1)), int(m.group(2)), float(m.group(3))
+    spec = TaskSpec(
+        task_id=task_id,
+        data_config=task_id,  # configs/data/{task_id}.yaml
+        n_atoms=n,
+        complexity=max(1, int(5 - T) + (body - 2)),  # higher body & lower T = harder
+        description=f"N-body chain N={n} {body}-body T={T}",
+    )
+    TASK_REGISTRY[task_id] = spec
+    return spec
+
+
 def _register_nbody_task(task_id: str) -> TaskSpec:
     """Dynamically create TaskSpec from nbody task_id pattern.
 
@@ -296,7 +318,9 @@ def get_violation_rate(eval_result: dict, task_id: str) -> float:
         KeyError: if a required metric key is missing from eval_result.
     """
     if task_id not in TASK_REGISTRY:
-        if task_id.startswith("nbody_"):
+        if task_id.startswith("nbody_chain_"):
+            _register_nbody_chain_task(task_id)
+        elif task_id.startswith("nbody_"):
             _register_nbody_task(task_id)
         else:
             raise KeyError(
@@ -322,6 +346,18 @@ def get_violation_rate(eval_result: dict, task_id: str) -> float:
 
     if task_id.startswith("unified_"):
         return float(eval_result["violation_rate"])
+
+    if task_id.startswith("nbody_chain_"):
+        # W2_energy normalized by reference energy std.
+        # Uses W2 to match the lower bound metric in chain_metric_lower_bound.py.
+        w2 = float(eval_result.get("energy_w2", eval_result.get("energy_w1", float("inf"))))
+        if "ref_energy_std" not in eval_result:
+            raise KeyError(
+                f"eval_result missing 'ref_energy_std' for nbody_chain task '{task_id}'. "
+                "Ensure evaluate() computes dataset.energies.std()."
+            )
+        ref_std = float(eval_result["ref_energy_std"])
+        return float(min(w2 / (ref_std + 1e-8), 1.0))
 
     if task_id.startswith("nbody_"):
         # Normalize W1 by reference energy std to get a [0, ~1] scale
@@ -360,6 +396,18 @@ def infer_task_id(cfg) -> str:
         ValueError if the task cannot be inferred.
     """
     data = cfg.data
+
+    # N-body chain energy distribution tasks: has nbody_chain flag (checked before nbody)
+    if hasattr(data, "nbody_chain") and data.nbody_chain:
+        n = int(getattr(data, "n_atoms", 15))
+        body = int(getattr(data, "body", 2))
+        T = float(getattr(data, "T", 1.0))
+        # Match dataset directory naming convention: T1.0, T2.0, T0.5
+        t_str = f"{T:.1f}" if T == int(T) else f"{T:g}"
+        task_id = f"nbody_chain_N{n}_b{body}_T{t_str}"
+        if task_id not in TASK_REGISTRY:
+            _register_nbody_chain_task(task_id)
+        return task_id
 
     # N-body energy distribution tasks: has nbody flag
     if hasattr(data, "nbody") and data.nbody:

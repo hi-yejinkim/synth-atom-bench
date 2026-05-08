@@ -7,11 +7,38 @@ import json
 import os
 import sys
 
-from experiments.chinchilla_lib.config import BATCH_SIZE, D_TARGETS
+import re
+from pathlib import Path
+
+from experiments.chinchilla_lib.config import BATCH_SIZE, D_TARGETS, EVAL_N_SAMPLES
 from experiments.chinchilla_lib.helpers import (
     _ckpt_dir, _get_grad_accum, _grid_meta_path, _lr_name,
     _measure_flops, _traj_path,
 )
+
+
+def _ensure_nbody_chain_config(task_id: str, config_dir: str = "configs/data") -> None:
+    """Auto-generate a Hydra data config YAML for an nbody_chain task if missing.
+
+    Pattern: nbody_chain_N{N}_b{body}_T{T}
+    Written to: {config_dir}/{task_id}.yaml
+    """
+    m = re.match(r"nbody_chain_N(\d+)_b(\d+)_T([\d.]+)", task_id)
+    if not m:
+        return
+    n, body, T = int(m.group(1)), int(m.group(2)), m.group(3)
+    config_path = Path(config_dir) / f"{task_id}.yaml"
+    if config_path.exists():
+        return
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        f"data_dir: outputs/data/{task_id}\n"
+        f"n_atoms: {n}\n"
+        f"body: {body}\n"
+        f"T: {float(T)}\n"
+        f"nbody_chain: true\n"
+    )
+    print(f"  [auto-config] Created {config_path}", file=sys.stderr)
 
 
 def generate(args: argparse.Namespace) -> None:
@@ -24,11 +51,16 @@ def generate(args: argparse.Namespace) -> None:
     lrs   = [float(lr) for lr in args.lrs.split(",")]
     chinchilla_dir = args.chinchilla_dir
 
-    from experiments.task_registry import _register_nbody_task
+    from experiments.task_registry import (
+        _register_nbody_task, _register_nbody_chain_task,
+    )
 
     for task_id in tasks:
         if task_id not in TASK_REGISTRY:
-            if task_id.startswith("nbody_"):
+            if task_id.startswith("nbody_chain_"):
+                _register_nbody_chain_task(task_id)
+                _ensure_nbody_chain_config(task_id)
+            elif task_id.startswith("nbody_"):
                 _register_nbody_task(task_id)
             else:
                 print(f"[WARN] Unknown task '{task_id}', skipping", file=sys.stderr)
@@ -38,6 +70,7 @@ def generate(args: argparse.Namespace) -> None:
         grid_meta: dict[str, dict] = {}
 
         is_nbody = task_id.startswith("nbody_")
+        is_chain = task_id.startswith("nbody_chain_")
         print(f"\n=== Task: {task_id} ({spec.description}) ===", file=sys.stderr)
 
         for arch in archs:
@@ -45,7 +78,8 @@ def generate(args: argparse.Namespace) -> None:
                 key = f"{arch}/{size}"
                 try:
                     n_params, fps = _measure_flops(arch, size, n_atoms, BATCH_SIZE,
-                                                   aux_dist=is_nbody)
+                                                   aux_dist=is_nbody,
+                                                   use_chain_pe=is_chain)
                 except Exception as e:
                     print(f"[WARN] {key}: FLOPs failed: {e}", file=sys.stderr)
                     continue
@@ -84,6 +118,7 @@ def generate(args: argparse.Namespace) -> None:
         else:
             _d_targets = D_TARGETS
         _epochs = getattr(args, "epochs", 1)
+        _eval_n_samples = getattr(args, "eval_n_samples", EVAL_N_SAMPLES)
         _d_names = [f"D{i+1}" for i in range(len(_d_targets))]
         _d_steps = [_epochs * d // BATCH_SIZE for d in _d_targets]
         _base_eval_every = _d_steps[0]  # eval at every D1-sized chunk so all budgets are captured
@@ -109,13 +144,14 @@ def generate(args: argparse.Namespace) -> None:
                             f" model.size={size}"
                             f" train.max_steps={total_steps}"
                             f" train.max_train_samples={d_target}"
+                            f" chinchilla.D_nominal={d_target}"
                             f" train.lr={lr}"
                             f" train.batch_size={BATCH_SIZE}"
                             f" train.grad_accum_steps={ga}"
                             f" train.warmup_fraction=0"
                             f" train.min_lr_ratio=0.01"
                             f" eval.every_n_steps={eval_every}"
-                            f" eval.n_samples=1000"
+                            f" eval.n_samples={_eval_n_samples}"
                             f" checkpoint.dir={ckpt}"
                             f" chinchilla.enabled=true"
                             f" chinchilla.task_id={task_id}"

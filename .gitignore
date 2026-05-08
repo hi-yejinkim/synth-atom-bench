@@ -66,4 +66,5 @@ viz/examples/
 
 # Shell scripts (manual utilities)
 scripts/
+commands.sh
 

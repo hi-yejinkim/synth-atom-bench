@@ -26,6 +26,7 @@ CHINCHILLA_7_SIZES = ["chinchilla_1", "chinchilla_3", "chinchilla_5", "chinchill
 # Steps:        195,    390,  1953,  3906  (D // BATCH_SIZE)
 # Actual D:   49920,  99840, 499968, 999936 (steps × BATCH_SIZE)
 BATCH_SIZE = 256
+EVAL_N_SAMPLES = 1000   # n_samples used for energy_w2 in trajectory logging
 D_TARGETS  = [50_000, 100_000, 500_000, 1_000_000]  # nominal data budgets
 D_STEPS    = [d // BATCH_SIZE for d in D_TARGETS]   # [195, 390, 1953, 3906]
 D_NAMES    = ["D1", "D2", "D3", "D4"]
