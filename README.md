@@ -26,6 +26,30 @@ Polymer chains with fixed bond lengths that must not self-intersect. Adds sequen
 
 **Metrics**: clash rate, bond length violation
 
+### N-body Chain Energy Tasks
+
+Physics-based polymer chains sampled from the Boltzmann distribution p(x) ∝ exp(−V(x)/T). The potential V(x) accumulates interactions by body order, making complexity directly controllable:
+
+| Body order | Potentials included | New interaction |
+|:---:|---|---|
+| **b=2** | V_bond + V_LJ | Harmonic bonds + non-bonded LJ (AMBER 1-4 scaling) |
+| **b=3** | + V_angle | Harmonic bond angles |
+| **b=4** | + V_dihedral | OPLS cosine dihedral (trans/gauche minima) |
+
+Tasks are parameterized as `nbody_chain_N{N}_b{body}_T{temperature}`. Lower T produces more structured, harder-to-learn distributions. Current sweep: N=15, b∈{2,3,4}, T∈{0.5,1.0,2.0} (9 tasks total).
+
+**Metric**: normalized energy W2 — Wasserstein-2 distance between generated and reference energy distributions, divided by the reference energy std. A finite-sample noise floor (lower bound) can be computed with `experiments/chain_metric_lower_bound.py`.
+
+<p align="center">
+  <img src="docs/assets/nbody_chain_structures.png" width="90%" alt="N=15 chain configurations at b=4, T=1.0">
+</p>
+
+<p align="center">
+  <img src="docs/assets/nbody_chain_energy_dist.png" width="65%" alt="Energy distribution across 9 nbody_chain tasks">
+</p>
+
+Sampling uses MALA with parallel tempering for robust low-temperature convergence. The Transformer uses chain positional encoding (sequential index bias) to leverage the fixed linear topology.
+
 ### Unified Rule System
 
 Progressive difficulty via 6 independently toggleable geometric rules:
@@ -122,6 +146,10 @@ uv sync
 uv run data/generate.py --N 50 --eta 0.3 --radius 0.5 \
     --num_samples 50000 --output outputs/data/N50_eta0.3/train.npz
 
+# N-body chain (N=15, 4-body potential, T=1.0)
+uv run data/generate_nbody_chain.py --N 15 --body 4 --T 1.0 \
+    --num_samples 50000 --output outputs/data/nbody_chain_N15_b4_T1.0/train.npz
+
 # Unified rules (rules 1-3, sp3 geometry, 10 backbone atoms)
 uv run data/generate_unified.py --rules 1,2,3 --N_backbone 10 \
     --n_samples 50000 --output outputs/data/unified_R123_sp3_N10/train.npz
@@ -151,20 +179,30 @@ uv run python experiments/chinchilla.py generate --tasks sphere_N50 \
 ## Project Structure
 
 ```
-├── data/               # MCMC samplers + PyTorch datasets (sphere, chain, VSEPR, unified)
-├── models/             # PaiNN, Transformer, Pairformer velocity networks
+├── data/
+│   ├── generate_nbody_chain.py  # MALA + parallel tempering for chain energy tasks
+│   ├── generate_nbody.py        # N-body LJ/hard-sphere sampler
+│   ├── generate_unified.py      # 6-rule unified geometry sampler
+│   ├── nbody_dataset.py         # Dataset loader (sphere + chain tasks)
+│   └── ...                      # Other samplers and dataset classes
+├── models/             # PaiNN, Transformer (+ chain PE), Pairformer velocity networks
 ├── flow_matching/      # Interpolation, training loss, ODE sampling
 ├── metrics/            # Per-task metrics (clash, bond, VSEPR, unified rule violations)
 ├── experiments/
-│   ├── chinchilla.py       # Chinchilla scaling CLI entry point
-│   ├── chinchilla_lib/     # Modular package (config, generate, run, collect, fit, plot)
-│   ├── task_registry.py    # Task definitions with complexity levels
-│   ├── model_registry.py   # Architecture size presets (chinchilla_0–13)
-│   ├── train.py            # Hydra-based training loop
-│   └── scaling.py          # Compute-matched scaling sweeps
-├── viz/                # Publication-quality plotting (scaling, chinchilla, structure)
-├── configs/            # Hydra configs (20+ task definitions in configs/data/)
-└── outputs/            # Generated artifacts (gitignored)
+│   ├── chinchilla.py                # Chinchilla scaling CLI entry point
+│   ├── chinchilla_lib/              # Modular package (config, generate, run, collect, fit, plot)
+│   ├── chain_metric_lower_bound.py  # Finite-sample noise floor for chain energy W2
+│   ├── task_registry.py             # Task definitions with complexity levels
+│   ├── model_registry.py            # Architecture size presets (chinchilla_0–13)
+│   └── train.py                     # Hydra-based training loop
+├── viz/
+│   ├── nbody_chain_3d.py    # 3D chain conformation visualizer
+│   ├── nbody_dist_chain.py  # Energy/structural distribution plots
+│   └── ...
+├── configs/
+│   ├── data/            # 35+ task configs incl. nbody_chain_N15_b{2,3,4}_T{0.5,1.0,2.0}
+│   └── ...
+└── outputs/             # Generated artifacts (gitignored)
 ```
 
 ## Tech Stack
